@@ -37,5 +37,7 @@ struct FileRowView: View {
             Spacer()
         }
         .padding(.vertical, 4)
+        .padding(.leading, 8)
+        .padding(.trailing, 6)
     }
 }

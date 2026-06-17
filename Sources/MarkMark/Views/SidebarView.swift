@@ -101,13 +101,13 @@ struct SidebarView: View {
                         Spacer()
                     }
                     .padding(.vertical, 4)
+                    .padding(.leading, 8)
+                    .padding(.trailing, 6)
                     .background {
-                        // 高亮作为内容背景，确保高亮 ⊆ 可点击区域（见 FileNodeRow.selectionHighlight）
+                        // 高亮填满整个内容边界 == contentShape == 可点击区域（见 FileNodeRow.selectionHighlight）
                         if fileTreeViewModel.selectedFileURL == url {
                             RoundedRectangle(cornerRadius: 6)
                                 .fill(themeColors.accentSoft)
-                                .padding(.horizontal, 4)
-                                .padding(.vertical, 1)
                         }
                     }
                     .contentShape(Rectangle())
@@ -225,20 +225,22 @@ struct FileNodeRow: View {
         fileTreeViewModel.selectedFileURL == node.path
     }
 
-    /// 选中高亮（模仿系统选中样式：圆角、accentSoft、轻微内缩）
+    /// 选中高亮（模仿系统选中样式：圆角、accentSoft）
     ///
     /// 作为行内容（FileRowView）的 `.background` 绘制，而非 `.listRowBackground`。
     /// `.listRowBackground` 会铺满整行单元格（含 List 默认行内边距、且不随层级缩进），
-    /// 但可点击区域只覆盖按钮 label（即内容本身），导致高亮比可点击区域大——
-    /// 点在高亮边缘却点不中。改为内容背景后，高亮 ⊆ 内容（=可点击区域），
-    /// 不再有「看着选中却点不中」的死区，同时保留 List 的层级缩进。
+    /// 但可点击区域只覆盖按钮 label（即内容本身）。
+    ///
+    /// 高亮必须**填满整个 FileRowView 边界**（不要再内缩 padding）——因为
+    /// `.contentShape(Rectangle())` 把可点击区域设为 FileRowView 的完整边界。
+    /// 若高亮再内缩，就会出现「高亮 ⊂ 可点击区域」：浅蓝底比红框小、图标露在底色外。
+    /// 留白改由 FileRowView 自身的内边距（leading/trailing/vertical）提供，
+    /// 这样 高亮 == contentShape == 可点击区域，三者完全一致，且图标始终落在高亮内。
     @ViewBuilder
     private var selectionHighlight: some View {
         if isSelected {
             RoundedRectangle(cornerRadius: 6)
                 .fill(themeColors.accentSoft)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
         }
     }
 
