@@ -181,6 +181,18 @@ struct MarkdownReaderApp: App {
 
             // 视图菜单：Sidebar 切换
             CommandGroup(after: .toolbar) {
+                Button(L10n.tr(.navigationBack, language: language)) {
+                    NotificationCenter.default.post(name: .navigateBack, object: nil)
+                }
+                .keyboardShortcut("[", modifiers: .command)
+
+                Button(L10n.tr(.navigationForward, language: language)) {
+                    NotificationCenter.default.post(name: .navigateForward, object: nil)
+                }
+                .keyboardShortcut("]", modifiers: .command)
+
+                Divider()
+
                 Button(L10n.tr(.titleBarToggleSidebar, language: language)) {
                     NotificationCenter.default.post(name: .toggleSidebar, object: nil)
                 }
@@ -244,6 +256,9 @@ extension Notification.Name {
     static let discardAllAnnotations = Notification.Name("com.markdownreader.discardAllAnnotations")
     static let performUndo = Notification.Name("com.markdownreader.performUndo")
     static let performRedo = Notification.Name("com.markdownreader.performRedo")
+    static let navigateBack = Notification.Name("com.markdownreader.navigateBack")
+    static let navigateForward = Notification.Name("com.markdownreader.navigateForward")
     static let dragHoverChanged = Notification.Name("com.markdownreader.dragHoverChanged")
     static let unsupportedFileTypeDropped = Notification.Name("com.markdownreader.unsupportedFileTypeDropped")
+    static let contentWindowReadyForLaunchRouting = Notification.Name("com.markdownreader.contentWindowReadyForLaunchRouting")
 }

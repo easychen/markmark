@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import Darwin
 
 /// Source category for an open request.
 ///
@@ -52,7 +53,13 @@ extension URL {
     /// `/private/tmp/...`; comparing resolved file URLs prevents watchdog false
     /// negatives that leave pending opens unconsumed.
     var markMarkCanonicalFileURL: URL {
-        isFileURL ? resolvingSymlinksInPath().standardizedFileURL : standardized
+        guard isFileURL else { return standardized }
+        let standardizedPath = standardizedFileURL.path
+        if let resolved = standardizedPath.withCString({ realpath($0, nil) }) {
+            defer { free(resolved) }
+            return URL(fileURLWithPath: String(cString: resolved))
+        }
+        return resolvingSymlinksInPath().standardizedFileURL
     }
 }
 

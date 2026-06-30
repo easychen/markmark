@@ -17,6 +17,14 @@ struct WindowDragArea: NSViewRepresentable {
 final class WindowDragNSView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let window = window else { return }
+
+        if event.clickCount == 2 {
+            if !window.styleMask.contains(.fullScreen) {
+                window.zoom(nil)
+            }
+            return
+        }
+
         window.performDrag(with: event)
     }
 }

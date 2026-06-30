@@ -1,8 +1,8 @@
-# Markdown Reader — 架构文档
+# MarkMark — 架构文档
 
 ## 1. 架构总览
 
-采用 SwiftUI 原生的声明式架构，遵循 MVVM 模式。应用以单窗口为主，自定义三栏布局（HStack + DragGesture）：左侧 Sidebar 目录树 + 中间内容区 + 右侧大纲面板。窗口使用 `.windowStyle(.hiddenTitleBar)` 隐藏系统标题栏，通过自定义 TitleBar 视图实现工具栏功能。使用 `@Observable` (macOS 26+) 进行状态管理，Swift 6.0 严格并发。
+采用 SwiftUI 原生的声明式架构，遵循 MVVM 模式。应用支持多窗口打开请求，并采用自定义三栏布局（HStack + NSViewRepresentable ResizeHandle）：左侧 Sidebar 目录树 + 中间内容区 + 右侧大纲面板。窗口使用 `.windowStyle(.hiddenTitleBar)` 隐藏系统标题栏，通过自定义 TitleBar 视图实现工具栏功能。使用 Swift Observation `@Observable` 进行状态管理，Swift 6.0 严格并发。
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -36,12 +36,12 @@ ContentView (HStack)
 |------|------|------|
 | UI 框架 | SwiftUI | macOS 原生，声明式 |
 | Markdown 渲染 | cmark-gfm + WKWebView (v2.x) | 完整 GFM 扩展语法，支持 Mermaid/PlantUML/KaTeX/Prism.js，替代 Textual |
-| 目录树 | 递归 DisclosureGroup | 原生树形展示方案，支持自定义行样式 |
+| 目录树 | 按需加载的递归 DisclosureGroup | 原生树形展示方案，支持自定义行样式，展开目录时再读取子层级 |
 | 布局 | 自定义 HStack + NSViewRepresentable ResizeHandle | 支持自定义拖拽阈值（140px 自动隐藏）、单文件模式无 Sidebar、圆角 Detail 区域；NavigationSplitView 无法满足这些需求；SwiftUI DragGesture 在 macOS 上不可靠 |
 | 窗口样式 | .windowStyle(.hiddenTitleBar) | 支持自定义 TitleBar 视图和圆角 Detail 区域；系统 NSToolbar 无法实现 Buddy 风格布局 |
 | 文件系统 | FileManager + URL | 原生文件访问 |
 | 异步 | Swift Concurrency (async/await) | 现代异步方案，Swift 6 严格并发检查 |
-| 状态管理 | @Observable (macOS 26+) | macOS 26 原生支持，更简洁的观察机制 |
+| 状态管理 | Swift Observation `@Observable` | 更简洁的观察机制 |
 | 本地化 | 自定义字典方案 | 不依赖 Apple String Catalog，灵活支持动态语言切换 |
 | Git 集成 | Process + /usr/bin/git | 轻量级，无需额外依赖 |
 
@@ -49,9 +49,9 @@ ContentView (HStack)
 
 ### 3.1 App 层
 
-- **MarkdownReaderApp**: 应用入口，WindowGroup 配置（`.windowStyle(.hiddenTitleBar)` + `.defaultSize(width: 900, height: 600)`），最低部署目标 macOS 26
+- **MarkdownReaderApp**: 应用入口，WindowGroup 配置（`.windowStyle(.hiddenTitleBar)` + `.defaultSize(width: 900, height: 600)`），最低部署目标 macOS 14
   - 值型 `WindowGroup(for: URL.self)` 承载多窗口打开：不同 URL 新窗口，同 URL 聚焦已有窗口
-  - 菜单命令：Cmd+, (设置)、Cmd+O (打开)、Cmd+\ (切换 Sidebar)、Cmd+Shift+E/R (渲染/原文)
+  - 菜单命令：Cmd+, (设置)、Cmd+O (打开)、Cmd+\ (切换 Sidebar)、Cmd+[ / Cmd+] (后退/前进)、Cmd+F/G (查找导航)
   - `openWindow(value:)` 注册到 `WindowRouter`，供 AppKit 层打开外部 URL
 - **AppDelegate**: AppKit 生命周期 adapter，接收 LaunchServices open URL、Finder Services、Dock reopen、窗口拖拽 overlay 安装
   - 不直接决定产品语义，而是把外部打开、启动完成、Dock reopen 交给 `OpenRequestCoordinator`
@@ -70,7 +70,7 @@ ContentView (HStack)
 |------|------|
 | ContentView | 主视图，管理三栏布局 + 设置模式切换，应用 ViewModifier 模式处理各种事件 |
 | DetailView | 右侧主体区容器（圆角），包含 TitleBar、内容区、大纲面板、Git 状态栏 |
-| SidebarView | 左侧目录树，展示文件结构，底部固定 Settings 按钮 |
+| SidebarView | 左侧目录树，展示文件结构，顶部提供打开/剪贴板/历史导航按钮，底部固定 Settings 按钮 |
 | FileRowView | 目录树中单个文件/目录行（SF Symbols 图标） |
 | OutlineView | 右侧大纲面板，层级缩进显示标题结构 |
 | OutlineResizeHandle | 大纲面板拖拽调整宽度（拖拽方向与 ResizeHandle 相反） |
@@ -80,6 +80,7 @@ ContentView (HStack)
 | RawMarkdownView | Markdown 原文显示视图（TextEditor + SF Mono） |
 | ProjectStatusView | 底部 Git 状态栏（分支、变更、commit+push） |
 | TrafficLightButtons | 自定义窗口控制按钮（close/minimize/zoom），hover 显示图标 |
+| TitleBarIconButton | 标题栏紧凑图标按钮，统一 hover / disabled 反馈 |
 | WelcomeView | 空状态占位视图，提示用户打开目录 |
 | ErrorView | 错误提示视图（文件读取失败等） |
 
@@ -89,7 +90,8 @@ ContentView (HStack)
 |-----------|------|
 | AppViewModel | 全局状态：rootDirectory, selectedFile, isSidebarVisible, sidebarWidth, isOutlineVisible, outlineWidth, isShowingSettings, isFullscreen, windowTitle（使用 @Observable） |
 | DocumentViewModel | 管理当前文档状态，文件读取（FileService），渲染/原文切换，大纲解析（OutlineService） |
-| FileTreeViewModel | 管理目录树数据（FileService），目录展开/折叠，键盘导航 |
+| FileTreeViewModel | 管理目录树数据（FileService），目录展开/折叠，键盘导航，并提供 revealDirectory / revealFile 只加载祖先链路 |
+| NavigationHistoryModel | 窗口内历史栈，记录 root、单文件、selected file、active node，用于 `⌘[` / `⌘]` 后退前进 |
 | GitViewModel | 管理 Git 状态刷新（GitService），commit+push 工作流 |
 
 ### 3.4 模型层 (Models)
@@ -108,7 +110,7 @@ ContentView (HStack)
 
 | Service | 职责 |
 |---------|------|
-| FileService | 文件系统操作：递归扫描目录（可配置隐藏文件/非 Markdown 过滤）、读取文件内容（UTF-8 + ASCII fallback）、检查目录是否包含 Markdown |
+| FileService | 文件系统操作：按层扫描目录（可配置隐藏文件/非 Markdown 过滤）、读取 Markdown 内容、打开时文本嗅探 fallback |
 | GitService | Git 操作：通过 Process 调用 /usr/bin/git，提供 status/add/commit/push 功能，解析 porcelain 格式输出 |
 | LanguageService | 语言检测：通过 Locale.current 检测系统语言，区分 zh-CN/zh-TW/en |
 | LocalizationService (L10n) | 本地化服务：80+ 键值的字典方案，支持 {n} 插值，3 语言完整翻译，SwiftUI Environment 注入 |
@@ -132,7 +134,8 @@ ContentView (HStack)
 7. 用户点击 Outline 按钮 → AppViewModel 切换 isOutlineVisible → DetailView 条件渲染 OutlineView
 8. 用户打开设置 → AppViewModel 切换 isShowingSettings → ContentView 切换到设置模式
 9. GitViewModel 定期刷新状态 → GitService 执行 git status → ProjectStatusView 更新显示
-10. 用户 commit+push → GitViewModel → GitService → 成功/失败消息 → Toast 通知
+10. 用户点击相对 Markdown 链接 → WebView 拦截 `mr:///...` → ContentView 应用 MarkdownLinkNavigationPolicy → FileTreeViewModel reveal / DocumentViewModel 打开目标，并写入 NavigationHistoryModel
+11. 用户按 Cmd+[ / Cmd+] → NavigationHistoryModel 弹出目标快照 → ContentView 恢复 root、selected file 与 active node
 
 ## 5. 依赖关系
 
@@ -178,10 +181,8 @@ LocalizationService
 ```
 
 外部依赖：
-- Textual: `https://github.com/gonzalezreal/textual` v0.3.1+ (SPM) — 过渡期保留，v2.x 渲染已迁移至 cmark-gfm + WKWebView
-  - 许可证：MIT
-  - Swift 6.0 + macOS 26+
-  - 依赖：swift-concurrency-extras 1.4.0, swiftui-math 0.1.0
+- swift-markdown: `https://github.com/apple/swift-markdown.git` (SPM)
+  - 传递依赖：swift-cmark
 - cmark-gfm: 内嵌 C 源码，GFM 扩展解析
 - Mermaid.js: 本地打包，图表渲染
 - KaTeX: 本地打包，数学公式渲染
@@ -195,7 +196,7 @@ LocalizationService
 | 布局方案 | 自定义 HStack + NSViewRepresentable ResizeHandle | NavigationSplitView | 支持自定义拖拽阈值（140px 自动隐藏 Sidebar）、单文件模式无 Sidebar、圆角 Detail 区域；SwiftUI DragGesture 在 macOS 上不可靠 |
 | 窗口样式 | .windowStyle(.hiddenTitleBar) + 内嵌 TitleBar | 系统 NSToolbar (.toolbar) | 支持圆角 Detail 区域和自定义拖拽区域；系统 .toolbar 无法实现 Buddy 风格布局 |
 | Markdown 渲染 | cmark-gfm + WKWebView (v2.x) | Textual / MarkdownUI | 完整 GFM 扩展，支持 Mermaid/PlantUML/KaTeX/Prism.js，WKWebView 原生选择 |
-| 状态管理 | @Observable (macOS 26+) | ObservableObject | macOS 26 原生支持，更简洁，无需 @Published |
+| 状态管理 | Swift Observation `@Observable` | ObservableObject | 更简洁，无需 @Published |
 | 目录树渲染 | 递归 DisclosureGroup | OutlineGroup | 更灵活的自定义行样式控制 |
 | 本地化方案 | 自定义字典 + Environment | Apple String Catalog | 支持动态语言切换，不依赖编译时字符串目录 |
 | 主题系统 | 5 核心色 + 对比度派生 | 固定色值方案 | 少量基础色派生大量语义 token，统一调性，自定义覆盖回退到基础主题 |
@@ -211,4 +212,4 @@ LocalizationService
 - **自定义布局窗口 resize 状态同步**：窗口 resize 时需注意 sidebarWidth 累积偏移问题
 - **全屏模式适配**：`.hiddenTitleBar` 模式下全屏时需处理红绿灯行为（红绿灯区域宽度从 76px 变为 32px）和 TitleBar 的自动隐藏/显示
 - **Git Process 依赖**：GitService 依赖 /usr/bin/git，Xcode 命令行工具需预装
-- **大纲 scroll-to-line**：OutlineItem 已存储 lineNumber，但 scroll-to-line 功能尚未实现
+- **大纲 scroll-to-line**：OutlineItem 存储 lineNumber，渲染视图与原文视图均需保持跳转回归

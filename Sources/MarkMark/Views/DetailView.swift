@@ -33,6 +33,13 @@ struct DetailView: View {
     let documentViewModel: DocumentViewModel
     let fileTreeViewModel: FileTreeViewModel
     let settings: SettingsModel
+    var canNavigateBack: Bool = false
+    var canNavigateForward: Bool = false
+    var navigateBack: () -> Void = {}
+    var navigateForward: () -> Void = {}
+    var toggleSidebar: () -> Void = {}
+    var toggleOutline: () -> Void = {}
+    var onLocalMarkdownLink: (URL) -> Void = { _ in }
     @Environment(\.language) private var language
     @Environment(\.themeColors) private var themeColors
 
@@ -187,39 +194,46 @@ struct DetailView: View {
                 TrafficLightButtons()
                     .padding(.leading, 12)
 
-                Button {
-                    appViewModel.toggleSidebar()
-                } label: {
-                    Image(systemName: "sidebar.leading")
-                        .font(.system(size: 14))
-                        .foregroundStyle(themeColors.fgSecondary)
+                TitleBarIconButton(
+                    systemName: "sidebar.leading",
+                    helpText: L10n.tr(.titleBarToggleSidebar, language: language)
+                ) {
+                    toggleSidebar()
                 }
-                .buttonStyle(.plain)
-                .help(L10n.tr(.titleBarToggleSidebar, language: language))
                 .padding(.leading, 8)
 
-                Button {
+                TitleBarIconButton(
+                    systemName: "folder.fill",
+                    helpText: L10n.tr(.titleBarOpen, language: language)
+                ) {
                     OpenPanelHelper.show(language: language)
-                } label: {
-                    Image(systemName: "folder.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(themeColors.fgSecondary)
                 }
-                .buttonStyle(.plain)
-                .help(L10n.tr(.titleBarOpen, language: language))
-                .padding(.leading, 4)
+                .padding(.leading, 2)
 
                 // 从剪贴板新建标注（始终可用，无需打开目录）
-                Button {
+                TitleBarIconButton(
+                    systemName: "doc.on.clipboard",
+                    helpText: "\(L10n.tr(.newFromClipboard, language: language)) (⌘N)"
+                ) {
                     NotificationCenter.default.post(name: .newFromClipboard, object: nil)
-                } label: {
-                    Image(systemName: "doc.on.clipboard")
-                        .font(.system(size: 14))
-                        .foregroundStyle(themeColors.fgSecondary)
                 }
-                .buttonStyle(.plain)
-                .help(L10n.tr(.newFromClipboard, language: language))
-                .padding(.leading, 4)
+                .padding(.leading, 2)
+
+                TitleBarIconButton(
+                    systemName: "chevron.left",
+                    helpText: "\(L10n.tr(.navigationBack, language: language)) (⌘[)",
+                    isEnabled: canNavigateBack,
+                    action: navigateBack
+                )
+                .padding(.leading, 8)
+
+                TitleBarIconButton(
+                    systemName: "chevron.right",
+                    helpText: "\(L10n.tr(.navigationForward, language: language)) (⌘])",
+                    isEnabled: canNavigateForward,
+                    action: navigateForward
+                )
+                .padding(.leading, 2)
             }
 
             // 文件路径或 Untitled 标识（左对齐，仅在有文档时显示）
@@ -260,53 +274,53 @@ struct DetailView: View {
             HStack(alignment: .bottom, spacing: 8) {
                 // 刷新按钮（常驻；文件被外部修改时以强调色提示）
                 if documentViewModel.hasDocument {
-                    Button {
+                    TitleBarIconButton(
+                        systemName: "arrow.clockwise",
+                        helpText: L10n.tr(.titleBarReload, language: language),
+                        foregroundColor: documentViewModel.isFileModifiedExternally ? themeColors.accent : themeColors.fgMuted
+                    ) {
                         handleReloadButtonTapped()
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 14))
-                            .foregroundStyle(documentViewModel.isFileModifiedExternally ? themeColors.accent : themeColors.fgMuted)
                     }
-                    .buttonStyle(.plain)
-                    .help(L10n.tr(.titleBarReload, language: language))
                 }
 
                 // 保存按钮（在渲染模式切换右侧）
                 if documentViewModel.hasDocument && documentViewModel.isMarkdownDocument {
-                    Button {
+                    TitleBarIconButton(
+                        systemName: "arrow.down.doc.fill",
+                        helpText: L10n.tr(.titleBarSave, language: language),
+                        isEnabled: documentViewModel.isDirty,
+                        foregroundColor: documentViewModel.isDirty ? themeColors.accent : themeColors.fgMuted
+                    ) {
                         NotificationCenter.default.post(name: .saveFile, object: nil)
-                    } label: {
-                        Image(systemName: "arrow.down.doc.fill")
-                            .font(.system(size: 14))
-                            .foregroundStyle(documentViewModel.isDirty ? themeColors.accent : themeColors.fgMuted)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!documentViewModel.isDirty)
-                    .help(L10n.tr(.titleBarSave, language: language))
 
-                    Menu {
+                    TitleBarIconMenu(
+                        systemName: "square.and.arrow.up",
+                        helpText: L10n.tr(.titleBarExportPDF, language: language),
+                        foregroundColor: themeColors.fgMuted
+                    ) {
                         Button {
                             exportPDF()
                         } label: {
                             Label(L10n.tr(.exportPDF, language: language), systemImage: "doc.richtext")
                         }
+                        .keyboardShortcut("e", modifiers: [.command, .option])
+
                         Button {
                             exportHTML()
                         } label: {
                             Label(L10n.tr(.exportHTML, language: language), systemImage: "chevron.left.forwardslash.chevron.right")
                         }
-                    } label: {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 14))
-                            .foregroundStyle(themeColors.fgMuted)
+                        .keyboardShortcut("e", modifiers: [.command, .shift])
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help(L10n.tr(.titleBarExportPDF, language: language))
 
                     // 应用 / 放弃所有标注（仅当存在标注时显示）
                     if documentHasAnnotations {
-                        Menu {
+                        TitleBarIconMenu(
+                            systemName: "checkmark.circle.badge.xmark",
+                            helpText: L10n.tr(.titleBarAnnotationActions, language: language),
+                            foregroundColor: themeColors.fgMuted
+                        ) {
                             Button {
                                 showApplyAnnotationsAlert = true
                             } label: {
@@ -317,23 +331,22 @@ struct DetailView: View {
                             } label: {
                                 Label(L10n.tr(.discardAnnotationsMenu, language: language), systemImage: "eraser")
                             }
-                        } label: {
-                            Image(systemName: "checkmark.circle.badge.xmark")
-                                .font(.system(size: 14))
-                                .foregroundStyle(themeColors.fgMuted)
                         }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
-                        .help(L10n.tr(.titleBarAnnotationActions, language: language))
                     }
 
                     // 复制：macOS 标准下拉按钮（图标 + 内联 chevron），单击即展开菜单。
-                    Menu {
+                    TitleBarIconMenu(
+                        systemName: "doc.on.doc",
+                        helpText: L10n.tr(.titleBarCopyMenu, language: language),
+                        foregroundColor: themeColors.fgMuted
+                    ) {
                         Button {
                             copyForAI()
                         } label: {
                             Label(L10n.tr(.copyForAIMenu, language: language), systemImage: "sparkles")
                         }
+                        .keyboardShortcut("c", modifiers: [.command, .shift])
+
                         Button {
                             copySessionFragments()
                         } label: {
@@ -349,44 +362,34 @@ struct DetailView: View {
                         } label: {
                             Label(L10n.tr(.copyPromptMenu, language: language), systemImage: "text.quote")
                         }
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                            .font(.system(size: 14))
-                            .foregroundStyle(themeColors.fgMuted)
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help(L10n.tr(.titleBarCopyMenu, language: language))
 
                     // 标注列表面板切换
-                    Button {
+                    TitleBarIconButton(
+                        systemName: "highlighter",
+                        helpText: L10n.tr(.titleBarAnnotationPanel, language: language),
+                        isEnabled: documentViewModel.hasDocument,
+                        foregroundColor: annotationPanelButtonColor
+                    ) {
                         appViewModel.toggleAnnotationPanel()
-                    } label: {
-                        Image(systemName: "highlighter")
-                            .font(.system(size: 14))
-                            .foregroundStyle(annotationPanelButtonColor)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!documentViewModel.hasDocument)
-                    .help(L10n.tr(.titleBarAnnotationPanel, language: language))
                 }
 
                 // 大纲切换按钮（始终显示在 titlebar 最右侧）
-                Button {
-                    appViewModel.toggleOutline()
-                } label: {
-                    Image(systemName: "sidebar.right")
-                        .font(.system(size: 14))
-                        .foregroundStyle(outlineButtonColor)
+                TitleBarIconButton(
+                    systemName: "sidebar.right",
+                    helpText: L10n.tr(.titleBarToggleOutline, language: language),
+                    isEnabled: documentViewModel.hasDocument && documentViewModel.isMarkdownDocument,
+                    foregroundColor: outlineButtonColor
+                ) {
+                    toggleOutline()
                 }
-                .buttonStyle(.plain)
-                .disabled(!documentViewModel.hasDocument || !documentViewModel.isMarkdownDocument)
-                .help(L10n.tr(.titleBarToggleOutline, language: language))
             }
             .padding(.trailing, 12)
         }
         .frame(height: 50)
         .background(WindowDragArea())
+        .zIndex(10)
         .alert(L10n.tr(.fileModifiedExternallyTitle, language: language), isPresented: $showReloadAlert) {
             Button(L10n.tr(.fileModifiedExternallyReload, language: language), role: .destructive) {
                 Task {
@@ -848,6 +851,7 @@ struct DetailView: View {
                     onCriticAction: { action in
                         documentViewModel.applyCriticAction(action)
                     },
+                    onLocalLinkActivated: onLocalMarkdownLink,
                     criticLabels: criticLabels,
                     handle: webViewHandle
                 )

@@ -13,7 +13,7 @@ MarkMark 是一个原生 macOS Markdown 阅读器应用（fork 自 [davidhoo/Mar
 - **当前版本**: 2.0.16
 - **最低部署**: macOS 14.0（自 fork 起从 macOS 26 → 15 → 14 逐步下调；渲染层由 SwiftUI WebView/WebPage 迁移回 WKWebView）
 - **架构**: Universal binary（arm64 + x86_64），Intel 与 Apple Silicon 均原生运行
-- **Bundle ID**: `com.markdownreader.app`
+- **Bundle ID**: `com.ft07.markmark`
 - **许可证**: MIT
 
 ## 技术栈
@@ -104,9 +104,9 @@ swift build -c release
 
 ## 依赖
 
-唯一外部依赖：**Textual** v0.3.1+（过渡期保留，渲染已迁移至 cmark-gfm + WKWebView）
-- 传递依赖：swift-concurrency-extras 1.4.0, swiftui-math 0.1.0
-- 锁定策略：`.upToNextMinor(from: "0.3.1")`（Textual 处于 v0.x，API 可能变化）
+Swift Package 依赖：**swift-markdown**（传递依赖 swift-cmark）。
+
+仓库内还随 app bundle 打包 Mermaid.js、KaTeX、Prism.js、CSS 等前端资源；Quick Look 扩展由 `build-app.sh` 手动链接并放入 `Contents/PlugIns/`。
 
 ## 架构模式 (MVVM)
 
@@ -141,7 +141,11 @@ swift build -c release
 
 ## 测试
 
-当前项目无测试目标。如需添加测试，在 Package.swift 中添加 `.testTarget`。
+当前项目已有 `MarkdownReaderKitTests` 和 `MarkMarkTests` 两个测试 target，运行：
+
+```bash
+swift test
+```
 
 ## CI/CD
 
@@ -159,7 +163,6 @@ GitHub Actions (`.github/workflows/release.yml`)：
 ## 已知注意事项
 
 - 同类型视图替换内容时 SwiftUI 可能不触发 `.onAppear`，需用 `.id(fileURL)` 强制重建
-- Textual v0.x API 不稳定，锁定小版本号（渲染已迁移，Textual 仅过渡期保留）
 - `SyntaxHighlightedEditor` 使用 ObjC runtime swizzling，修改需谨慎
 - `.hiddenTitleBar` 模式下全屏时红绿灯行为需特殊处理（76px → 32px）
 - 全局设置单例 `SettingsModel.shared` 不适合多窗口场景

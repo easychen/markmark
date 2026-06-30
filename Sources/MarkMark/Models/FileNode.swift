@@ -4,7 +4,7 @@ import Foundation
 ///
 /// 旧的 `children: [FileNode]?` 无法区分「未加载」「加载中」「已加载为空」，
 /// 懒加载目录树需要把这些状态显式建模。
-indirect enum DirectoryChildrenState: Hashable {
+indirect enum DirectoryChildrenState: Hashable, Sendable {
     case notLoaded
     case loading
     case loaded([FileNode])
@@ -33,7 +33,7 @@ indirect enum DirectoryChildrenState: Hashable {
 }
 
 /// 文件/目录节点模型，用于构建目录树。
-struct FileNode: Identifiable, Hashable {
+struct FileNode: Identifiable, Hashable, Sendable {
     let id: URL
     let name: String
     let path: URL

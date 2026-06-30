@@ -34,6 +34,26 @@ private struct WindowCaptureView: NSViewRepresentable {
     }
 }
 
+private struct LinkNavigationDirectoryChange: Equatable {
+    let rootURL: URL
+    let targetURL: URL
+    let targetKind: MarkdownLinkNavigationPolicy.TargetKind
+}
+
+private struct NavigationHistoryObservedState: Equatable {
+    let isSingleFileMode: Bool
+    let rootDirectory: URL?
+    let singleFileURL: URL?
+    let selectedFileURL: URL?
+
+    init(snapshot: NavigationHistorySnapshot) {
+        isSingleFileMode = snapshot.isSingleFileMode
+        rootDirectory = snapshot.rootDirectory
+        singleFileURL = snapshot.singleFileURL
+        selectedFileURL = snapshot.selectedFileURL
+    }
+}
+
 /// 主视图，管理自定义 HStack 两列布局
 /// 设置模式下左侧显示设置菜单，右侧显示设置内容
 struct ContentView: View {
@@ -45,6 +65,7 @@ struct ContentView: View {
     @State private var appViewModel = AppViewModel()
     @State private var fileTreeViewModel = FileTreeViewModel()
     @State private var documentViewModel = DocumentViewModel()
+    @State private var navigationHistory = NavigationHistoryModel()
     @State private var settings = SettingsModel.shared
     @Environment(\.language) private var language
     @Environment(\.colorScheme) private var colorScheme
@@ -58,6 +79,11 @@ struct ContentView: View {
 
     @State private var registeredOpenURL: URL?
     @State private var hostingWindow: NSWindow?
+    @State private var linkNavigationDirectoryChange: LinkNavigationDirectoryChange?
+    @State private var historyNavigationDirectoryChange: NavigationHistorySnapshot?
+    @State private var isApplyingHistoryNavigation = false
+    @State private var didRegisterLaunchWindowRouter = false
+    @State private var didNotifyLaunchContentWindowReady = false
 
     var body: some View {
         mainLayout
@@ -71,7 +97,8 @@ struct ContentView: View {
             .modifier(FullScreenStateModifier(appViewModel: appViewModel))
             .modifier(KeyboardShortcutModifier(
                 appViewModel: appViewModel,
-                documentViewModel: documentViewModel
+                documentViewModel: documentViewModel,
+                toggleSidebar: toggleSidebarAndRemember
             ))
             .modifier(FileOpenModifier(
                 appViewModel: appViewModel,
@@ -84,7 +111,16 @@ struct ContentView: View {
             .modifier(DirectoryChangeModifier(
                 appViewModel: appViewModel,
                 documentViewModel: documentViewModel,
-                fileTreeViewModel: fileTreeViewModel
+                fileTreeViewModel: fileTreeViewModel,
+                linkNavigationDirectoryChange: $linkNavigationDirectoryChange,
+                historyNavigationDirectoryChange: $historyNavigationDirectoryChange,
+                onLinkNavigationFinished: {
+                    recordCurrentNavigationSnapshot()
+                },
+                onHistoryNavigationFinished: {
+                    isApplyingHistoryNavigation = false
+                    navigationHistory.replaceCurrent(currentNavigationSnapshot)
+                }
             ))
             .modifier(SelectionChangeModifier(
                 appViewModel: appViewModel,
@@ -105,6 +141,7 @@ struct ContentView: View {
                 if let registeredOpenURL {
                     WindowRouter.shared.attachWindow(window, to: registeredOpenURL)
                 }
+                notifyLaunchContentWindowReadyIfNeeded()
             })
             .task {
                 // 连接 FileTreeViewModel 与 DocumentViewModel
@@ -128,6 +165,7 @@ struct ContentView: View {
                 // 任意窗口注册即可（openWindow 是 App 级动作），多窗口互相覆盖等价。
                 if registersWindowRouter {
                     WindowRouter.shared.open = { url in openWindow(value: url) }
+                    didRegisterLaunchWindowRouter = true
                 }
 
                 // 本窗口绑定了具体 URL（多窗口场景：双击文件新开的窗口）→ 直接打开它，
@@ -137,17 +175,16 @@ struct ContentView: View {
                     FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
                     clearPendingOpenDefaultsIfMatching(url)
                     registerWindowURL(url)
+                    notifyLaunchContentWindowReadyIfNeeded()
                     if isDir.boolValue {
                         appViewModel.openDirectory(url)
-                        settings.lastOpenedDirectory = url
-                        settings.lastOpenedFile = nil
+                        settings.rememberOpenedDirectory(url)
                         settings.addRecentItem(url: url, isDirectory: true)
                         await fileTreeViewModel.loadDirectory(url)
                     } else {
                         appViewModel.openSingleFile(url)
                         fileTreeViewModel.selectedFileURL = url
-                        settings.lastOpenedDirectory = nil
-                        settings.lastOpenedFile = url
+                        settings.rememberOpenedSingleFile(url)
                         settings.addRecentItem(url: url, isDirectory: false)
                         await documentViewModel.loadFile(at: url)
                     }
@@ -162,8 +199,7 @@ struct ContentView: View {
                     registerWindowURL(url)
                     appViewModel.openSingleFile(url)
                     fileTreeViewModel.selectedFileURL = url
-                    settings.lastOpenedDirectory = nil
-                    settings.lastOpenedFile = url
+                    settings.rememberOpenedSingleFile(url)
                     settings.addRecentItem(url: url, isDirectory: false)
                     // 冷启动时显式加载文件，避免依赖 SelectionChangeModifier 的异步触发
                     // 修复：双击 md 文件冷启动偶发显示欢迎页的 bug
@@ -173,20 +209,22 @@ struct ContentView: View {
                     let url = URL(fileURLWithPath: dirPath)
                     registerWindowURL(url)
                     appViewModel.openDirectory(url)
-                    settings.lastOpenedDirectory = url
-                    settings.lastOpenedFile = nil
+                    settings.rememberOpenedDirectory(url)
                     settings.addRecentItem(url: url, isDirectory: true)
                     // 冷启动时显式加载目录
                     await fileTreeViewModel.loadDirectory(url)
                 }
+                notifyLaunchContentWindowReadyIfNeeded()
                 // 不在此处调用 restoreLastLocation()
                 // 冷启动时，applicationDidFinishLaunching 通过 .restoreLastLocation 通知处理
                 // 这样可以确保通知在视图完全挂载后才发送，避免时序问题
             }
-            .onActiveReceive(NotificationCenter.default.publisher(for: .resetToWelcome)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .resetToWelcome)) { notification in
+                guard shouldHandleWindowRoutedNotification(notification) else { return }
                 resetToWelcome()
             }
-            .onActiveReceive(NotificationCenter.default.publisher(for: .restoreLastLocation)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .restoreLastLocation)) { notification in
+                guard shouldHandleWindowRoutedNotification(notification) else { return }
                 restoreLastLocation()
             }
             .onActiveReceive(NotificationCenter.default.publisher(for: .performUndo)) { _ in
@@ -194,6 +232,15 @@ struct ContentView: View {
             }
             .onActiveReceive(NotificationCenter.default.publisher(for: .performRedo)) { _ in
                 documentViewModel.performRedo()
+            }
+            .onActiveReceive(NotificationCenter.default.publisher(for: .navigateBack)) { _ in
+                navigateHistory(backward: true)
+            }
+            .onActiveReceive(NotificationCenter.default.publisher(for: .navigateForward)) { _ in
+                navigateHistory(backward: false)
+            }
+            .onChange(of: currentNavigationObservedState) { _, _ in
+                scheduleNavigationHistoryRecord()
             }
             .onChange(of: colorScheme) { _, newScheme in
                 // 仅在「跟随系统」模式下更新 systemIsDark
@@ -244,7 +291,18 @@ struct ContentView: View {
                 SidebarView(
                     fileTreeViewModel: fileTreeViewModel,
                     appViewModel: appViewModel,
-                    documentViewModel: documentViewModel
+                    documentViewModel: documentViewModel,
+                    canNavigateBack: navigationHistory.canGoBack,
+                    canNavigateForward: navigationHistory.canGoForward,
+                    navigateBack: {
+                        navigateHistory(backward: true)
+                    },
+                    navigateForward: {
+                        navigateHistory(backward: false)
+                    },
+                    toggleSidebar: {
+                        toggleSidebarAndRemember()
+                    }
                 )
                 .frame(width: appViewModel.isSidebarVisible ? appViewModel.sidebarWidth : 0)
                 .clipped()
@@ -259,7 +317,24 @@ struct ContentView: View {
                     appViewModel: appViewModel,
                     documentViewModel: documentViewModel,
                     fileTreeViewModel: fileTreeViewModel,
-                    settings: settings
+                    settings: settings,
+                    canNavigateBack: navigationHistory.canGoBack,
+                    canNavigateForward: navigationHistory.canGoForward,
+                    navigateBack: {
+                        navigateHistory(backward: true)
+                    },
+                    navigateForward: {
+                        navigateHistory(backward: false)
+                    },
+                    toggleSidebar: {
+                        toggleSidebarAndRemember()
+                    },
+                    toggleOutline: {
+                        toggleOutlineAndRemember()
+                    },
+                    onLocalMarkdownLink: { targetURL in
+                        handleLocalMarkdownLink(targetURL)
+                    }
                 )
             }
         }
@@ -275,6 +350,174 @@ struct ContentView: View {
 
     // MARK: - 方法
 
+    private var currentNavigationSnapshot: NavigationHistorySnapshot {
+        let selectedFileURL = fileTreeViewModel.selectedFileURL?.markMarkCanonicalFileURL
+        let singleFileURL = appViewModel.singleFileURL?.markMarkCanonicalFileURL
+        let rootDirectory = appViewModel.rootDirectory?.markMarkCanonicalFileURL
+        let activeNodeURL = fileTreeViewModel.activeNodeURL?.markMarkCanonicalFileURL
+            ?? selectedFileURL
+            ?? rootDirectory
+            ?? singleFileURL
+
+        return NavigationHistorySnapshot(
+            isSingleFileMode: appViewModel.isSingleFileMode,
+            rootDirectory: rootDirectory,
+            singleFileURL: singleFileURL,
+            selectedFileURL: selectedFileURL ?? (appViewModel.isSingleFileMode ? singleFileURL : nil),
+            activeNodeURL: activeNodeURL
+        )
+    }
+
+    private var currentNavigationObservedState: NavigationHistoryObservedState {
+        NavigationHistoryObservedState(snapshot: currentNavigationSnapshot)
+    }
+
+    private func scheduleNavigationHistoryRecord() {
+        guard !isApplyingHistoryNavigation,
+              linkNavigationDirectoryChange == nil,
+              historyNavigationDirectoryChange == nil else { return }
+
+        // Several navigation paths update root/selection in two adjacent state changes.
+        // Recording on the next runloop captures the settled window state and avoids
+        // transient entries such as “new root + previous selected file”.
+        DispatchQueue.main.async {
+            recordCurrentNavigationSnapshot()
+        }
+    }
+
+    private func recordCurrentNavigationSnapshot() {
+        guard !isApplyingHistoryNavigation,
+              linkNavigationDirectoryChange == nil,
+              historyNavigationDirectoryChange == nil else { return }
+        navigationHistory.record(currentNavigationSnapshot)
+    }
+
+    private func navigateHistory(backward: Bool) {
+        guard !isApplyingHistoryNavigation else { return }
+        let target = backward ? navigationHistory.backTarget : navigationHistory.forwardTarget
+        guard target != nil else {
+            NSSound.beep()
+            return
+        }
+
+        performAfterUntitledChangesResolved {
+            let snapshot = backward ? navigationHistory.goBack() : navigationHistory.goForward()
+            guard let snapshot else { return }
+            applyHistorySnapshot(snapshot)
+        }
+    }
+
+    private func performAfterUntitledChangesResolved(_ action: @escaping () -> Void) {
+        guard documentViewModel.isUntitled && documentViewModel.isDirty else {
+            action()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = L10n.tr(.unsavedChangesTitle, language: language)
+        alert.informativeText = L10n.tr(.unsavedChangesMessage, language: language)
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: L10n.tr(.unsavedSave, language: language))
+        alert.addButton(withTitle: L10n.tr(.unsavedDontSave, language: language))
+        alert.addButton(withTitle: L10n.tr(.unsavedCancel, language: language))
+        alert.buttons[0].keyEquivalent = "\r"
+        alert.buttons[1].keyEquivalent = "d"
+        alert.buttons[1].keyEquivalentModifierMask = .command
+        alert.buttons[2].keyEquivalent = "\u{1b}"
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            let defaultDir = settings.lastOpenedDirectory ?? settings.lastOpenedFile?.deletingLastPathComponent()
+            let suggestedName = documentViewModel.fileName.isEmpty ? "Untitled.md" : documentViewModel.fileName
+            guard let saveURL = OpenPanelHelper.showSavePanel(
+                language: language,
+                defaultDirectory: defaultDir,
+                suggestedName: suggestedName
+            ) else { return }
+
+            Task { @MainActor in
+                await documentViewModel.saveAs(to: saveURL)
+                appViewModel.hasUnsavedUntitled = false
+                action()
+            }
+        case .alertSecondButtonReturn:
+            documentViewModel.discardUntitledFile()
+            appViewModel.hasUnsavedUntitled = false
+            action()
+        default:
+            break
+        }
+    }
+
+    private func applyHistorySnapshot(_ snapshot: NavigationHistorySnapshot) {
+        isApplyingHistoryNavigation = true
+
+        if snapshot.isSingleFileMode {
+            guard let fileURL = snapshot.singleFileURL ?? snapshot.selectedFileURL else {
+                resetToWelcome()
+                isApplyingHistoryNavigation = false
+                return
+            }
+            applySingleFileHistorySnapshot(fileURL)
+            return
+        }
+
+        guard let rootURL = snapshot.rootDirectory else {
+            resetToWelcome()
+            isApplyingHistoryNavigation = false
+            return
+        }
+
+        registerWindowURL(rootURL)
+        settings.rememberOpenedDirectory(rootURL)
+        if let selectedFileURL = snapshot.selectedFileURL {
+            settings.rememberDirectorySelectedFile(selectedFileURL, rootDirectory: rootURL)
+        }
+
+        if appViewModel.isSingleFileMode
+            || appViewModel.rootDirectory?.markMarkCanonicalFileURL != rootURL {
+            historyNavigationDirectoryChange = snapshot
+            appViewModel.openDirectory(rootURL)
+            return
+        }
+
+        Task { @MainActor in
+            await applyDirectoryHistorySnapshot(snapshot)
+            isApplyingHistoryNavigation = false
+            navigationHistory.replaceCurrent(currentNavigationSnapshot)
+        }
+    }
+
+    private func applySingleFileHistorySnapshot(_ fileURL: URL) {
+        let normalizedFileURL = fileURL.markMarkCanonicalFileURL
+        registerWindowURL(normalizedFileURL)
+        settings.rememberOpenedSingleFile(normalizedFileURL)
+        appViewModel.openSingleFile(normalizedFileURL)
+        fileTreeViewModel.clearDirectory(clearSelection: false)
+        fileTreeViewModel.selectedFileURL = normalizedFileURL
+        fileTreeViewModel.activeNodeURL = normalizedFileURL
+
+        Task { @MainActor in
+            await documentViewModel.loadFile(at: normalizedFileURL)
+            isApplyingHistoryNavigation = false
+            navigationHistory.replaceCurrent(currentNavigationSnapshot)
+        }
+    }
+
+    @MainActor
+    private func applyDirectoryHistorySnapshot(_ snapshot: NavigationHistorySnapshot) async {
+        if let selectedFileURL = snapshot.selectedFileURL {
+            await fileTreeViewModel.revealFile(selectedFileURL, select: true)
+            await documentViewModel.loadFile(at: selectedFileURL)
+        } else {
+            fileTreeViewModel.selectedFileURL = nil
+            documentViewModel.clearDocument()
+        }
+
+        if let activeNodeURL = snapshot.activeNodeURL {
+            await fileTreeViewModel.revealNode(activeNodeURL, selectFile: false)
+        }
+    }
 
     private func clearPendingOpenDefaultsIfMatching(_ url: URL) {
         let canonicalURL = url.markMarkCanonicalFileURL
@@ -301,6 +544,22 @@ struct ContentView: View {
         WindowRouter.shared.registerOpenedURL(canonicalURL, window: windowForOpenRegistration())
     }
 
+    private func notifyLaunchContentWindowReadyIfNeeded() {
+        guard registersWindowRouter,
+              didRegisterLaunchWindowRouter,
+              !didNotifyLaunchContentWindowReady,
+              let readyWindow = hostingWindow
+        else { return }
+
+        didNotifyLaunchContentWindowReady = true
+        NotificationCenter.default.post(
+            name: .contentWindowReadyForLaunchRouting,
+            object: readyWindow,
+            userInfo: [
+                "isUntitledLaunchWindow": openedURL == nil
+            ]
+        )
+    }
 
     private func windowForOpenRegistration() -> NSWindow? {
         if let hostingWindow { return hostingWindow }
@@ -315,11 +574,146 @@ struct ContentView: View {
         }
     }
 
+    private func shouldHandleWindowRoutedNotification(_ notification: Notification) -> Bool {
+        if let targetWindow = notification.object as? NSWindow {
+            return hostingWindow === targetWindow
+        }
+
+        // Backward-compatible fallback for notifications posted without a
+        // target window. Prefer AppKit's immediate key/main window state over
+        // SwiftUI controlActiveState so startup routing cannot be dropped in
+        // the narrow window before SwiftUI refreshes that environment value.
+        guard let hostingWindow else { return false }
+        if hostingWindow === NSApp.keyWindow || hostingWindow === NSApp.mainWindow {
+            return true
+        }
+
+        let usableWindows = NSApp.windows.filter {
+            $0.isVisible && $0.canBecomeKey && !($0 is NSPanel) && !$0.isSheet
+        }
+        return usableWindows.count == 1 && usableWindows[0] === hostingWindow
+    }
+
     private func unregisterWindowURL() {
         if let registeredOpenURL {
             WindowRouter.shared.unregisterOpenedURL(registeredOpenURL)
             self.registeredOpenURL = nil
         }
+    }
+
+    private func handleLocalMarkdownLink(_ targetURL: URL) {
+        let decision = MarkdownLinkNavigationPolicy.decide(
+            sourceFileURL: documentViewModel.currentFileURL,
+            currentRootURL: appViewModel.rootDirectory,
+            targetURL: targetURL
+        )
+
+        switch decision.targetKind {
+        case .missing:
+            showMarkdownLinkFailure(
+                titleKey: .markdownLinkMissingTitle,
+                messageKey: .markdownLinkMissingMessage,
+                targetURL: decision.targetURL
+            )
+            return
+        case .unsupportedFile:
+            showMarkdownLinkFailure(
+                titleKey: .markdownLinkUnsupportedTitle,
+                messageKey: .markdownLinkUnsupportedMessage,
+                targetURL: decision.targetURL
+            )
+            return
+        case .markdownFile, .directory:
+            break
+        }
+
+        guard let rootURL = decision.rootURL else { return }
+        if decision.requiresConfirmation && !confirmMarkdownLinkRootChange(decision) {
+            return
+        }
+
+        applyMarkdownLinkNavigation(decision, rootURL: rootURL)
+    }
+
+    private func applyMarkdownLinkNavigation(
+        _ decision: MarkdownLinkNavigationPolicy.Decision,
+        rootURL: URL
+    ) {
+        let normalizedRoot = rootURL.markMarkCanonicalFileURL
+        if appViewModel.rootDirectory?.markMarkCanonicalFileURL == normalizedRoot {
+            Task { @MainActor in
+                await revealMarkdownLinkTarget(decision)
+            }
+            return
+        }
+
+        linkNavigationDirectoryChange = LinkNavigationDirectoryChange(
+            rootURL: normalizedRoot,
+            targetURL: decision.targetURL,
+            targetKind: decision.targetKind
+        )
+        registerWindowURL(normalizedRoot)
+        settings.rememberOpenedDirectory(normalizedRoot)
+        switch decision.targetKind {
+        case .markdownFile:
+            settings.rememberDirectorySelectedFile(decision.targetURL, rootDirectory: normalizedRoot)
+        case .directory:
+            if let currentFileURL = documentViewModel.currentFileURL {
+                settings.rememberDirectorySelectedFile(currentFileURL, rootDirectory: normalizedRoot)
+            }
+        case .missing, .unsupportedFile:
+            break
+        }
+        settings.addRecentItem(url: normalizedRoot, isDirectory: true)
+        appViewModel.openDirectory(normalizedRoot)
+    }
+
+    @MainActor
+    private func revealMarkdownLinkTarget(_ decision: MarkdownLinkNavigationPolicy.Decision) async {
+        switch decision.targetKind {
+        case .directory:
+            await fileTreeViewModel.revealDirectory(decision.targetURL)
+        case .markdownFile:
+            await fileTreeViewModel.revealMarkdownFile(decision.targetURL)
+        case .missing, .unsupportedFile:
+            break
+        }
+        recordCurrentNavigationSnapshot()
+    }
+
+    private func confirmMarkdownLinkRootChange(_ decision: MarkdownLinkNavigationPolicy.Decision) -> Bool {
+        guard let rootURL = decision.rootURL else { return false }
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = L10n.tr(.markdownLinkExpandRootTitle, language: language)
+        alert.informativeText = L10n.tr(
+            .markdownLinkExpandRootMessage,
+            language: language,
+            args: [
+                "root": rootURL.path,
+                "target": decision.targetURL.path
+            ]
+        )
+        alert.addButton(withTitle: L10n.tr(.markdownLinkOpenCommonRoot, language: language))
+        alert.addButton(withTitle: L10n.tr(.unsavedCancel, language: language))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func showMarkdownLinkFailure(
+        titleKey: L10n.Key,
+        messageKey: L10n.Key,
+        targetURL: URL
+    ) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n.tr(titleKey, language: language)
+        alert.informativeText = L10n.tr(
+            messageKey,
+            language: language,
+            args: ["target": targetURL.path]
+        )
+        alert.addButton(withTitle: L10n.tr(.confirm, language: language))
+        alert.runModal()
     }
 
     private func applyAppearance(_ mode: AppearanceMode) {
@@ -329,6 +723,7 @@ struct ContentView: View {
     /// 重置所有 ViewModel 状态，显示欢迎页
     /// 用于 Dock 点击重新激活时，避免恢复旧窗口的文档内容
     private func resetToWelcome() {
+        navigationHistory.clear()
         unregisterWindowURL()
         appViewModel.rootDirectory = nil
         appViewModel.isSingleFileMode = false
@@ -341,6 +736,8 @@ struct ContentView: View {
         if appViewModel.isSidebarVisible {
             appViewModel.isSidebarVisible = false
         }
+        appViewModel.isOutlineVisible = false
+        appViewModel.isAnnotationPanelVisible = false
         fileTreeViewModel.selectedFileURL = nil
         documentViewModel.clearDocument()
     }
@@ -355,17 +752,48 @@ struct ContentView: View {
             return
         }
         if let dir = settings.lastOpenedDirectory {
+            let normalizedDir = dir.markMarkCanonicalFileURL
+            if let selectedFile = settings.restorableDirectorySelectedFile(for: normalizedDir) {
+                historyNavigationDirectoryChange = NavigationHistorySnapshot(
+                    isSingleFileMode: false,
+                    rootDirectory: normalizedDir,
+                    singleFileURL: nil,
+                    selectedFileURL: selectedFile,
+                    activeNodeURL: selectedFile
+                )
+            }
             registerWindowURL(dir)
-            appViewModel.openDirectory(dir)
+            appViewModel.openDirectory(dir, sidebarVisible: settings.rememberedSidebarVisible)
+            appViewModel.applyRememberedChromeState(
+                sidebarVisible: settings.rememberedSidebarVisible,
+                outlineVisible: settings.rememberedOutlineVisible
+            )
             settings.addRecentItem(url: dir, isDirectory: true)
         } else if let file = settings.lastOpenedFile {
             registerWindowURL(file)
-            appViewModel.openSingleFile(file)
+            appViewModel.openSingleFile(file, sidebarVisible: settings.rememberedSidebarVisible)
+            appViewModel.applyRememberedChromeState(
+                sidebarVisible: settings.rememberedSidebarVisible,
+                outlineVisible: settings.rememberedOutlineVisible
+            )
             fileTreeViewModel.selectedFileURL = file
             settings.addRecentItem(url: file, isDirectory: false)
+            Task { @MainActor in
+                await documentViewModel.loadFile(at: file)
+            }
         } else {
             resetToWelcome()
         }
+    }
+
+    private func toggleSidebarAndRemember() {
+        appViewModel.toggleSidebar()
+        settings.rememberedSidebarVisible = appViewModel.isSidebarVisible
+    }
+
+    private func toggleOutlineAndRemember() {
+        appViewModel.toggleOutline()
+        settings.rememberedOutlineVisible = appViewModel.isOutlineVisible
     }
 }
 
@@ -531,11 +959,12 @@ private struct FullScreenStateModifier: ViewModifier {
 private struct KeyboardShortcutModifier: ViewModifier {
     let appViewModel: AppViewModel
     let documentViewModel: DocumentViewModel
+    let toggleSidebar: () -> Void
 
     func body(content: Content) -> some View {
         content
             .onActiveReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
-                appViewModel.toggleSidebar()
+                toggleSidebar()
             }
             .onActiveReceive(NotificationCenter.default.publisher(for: .switchToRendered)) { _ in
                 documentViewModel.switchDisplayMode(.rendered)
@@ -620,13 +1049,17 @@ private struct FileOpenModifier: ViewModifier {
                         appViewModel.hasUnsavedUntitled = false
 
                         if let rootDir = appViewModel.rootDirectory,
-                           saveURL.path.hasPrefix(rootDir.path + "/") {
+                           MarkdownLinkNavigationPolicy.contains(saveURL, inOrEqualTo: rootDir) {
                             await fileTreeViewModel.loadDirectory(rootDir)
                             fileTreeViewModel.selectedFileURL = saveURL
+                            settings.rememberDirectorySelectedFile(saveURL, rootDirectory: rootDir)
+                        } else if appViewModel.isSingleFileMode {
+                            settings.rememberOpenedSingleFile(saveURL)
+                        } else {
+                            settings.lastOpenedFile = saveURL
                         }
 
                         // 更新最近打开记录
-                        settings.lastOpenedFile = saveURL
                         settings.addRecentItem(url: saveURL, isDirectory: false)
                     }
                 }
@@ -649,8 +1082,7 @@ private struct FileOpenModifier: ViewModifier {
     private func applyOpenDirectory(_ url: URL) {
         recordOpenedURL(url)
         appViewModel.openDirectory(url)
-        settings.lastOpenedDirectory = url
-        settings.lastOpenedFile = nil
+        settings.rememberOpenedDirectory(url)
         settings.addRecentItem(url: url, isDirectory: true)
     }
 
@@ -671,8 +1103,7 @@ private struct FileOpenModifier: ViewModifier {
         recordOpenedURL(url)
         appViewModel.openSingleFile(url)
         fileTreeViewModel.selectedFileURL = url
-        settings.lastOpenedDirectory = nil
-        settings.lastOpenedFile = url
+        settings.rememberOpenedSingleFile(url)
         settings.addRecentItem(url: url, isDirectory: false)
         // 不需要显式调用 loadFile — selectedFileURL 变化会触发 SelectionChangeModifier 统一加载
     }
@@ -717,12 +1148,16 @@ private struct FileOpenModifier: ViewModifier {
 
                     // 如果保存在当前目录下，刷新文件树
                     if let rootDir = appViewModel.rootDirectory,
-                       saveURL.path.hasPrefix(rootDir.path + "/") {
+                       MarkdownLinkNavigationPolicy.contains(saveURL, inOrEqualTo: rootDir) {
                         await fileTreeViewModel.loadDirectory(rootDir)
                         fileTreeViewModel.selectedFileURL = saveURL
+                        settings.rememberDirectorySelectedFile(saveURL, rootDirectory: rootDir)
+                    } else if appViewModel.isSingleFileMode {
+                        settings.rememberOpenedSingleFile(saveURL)
+                    } else {
+                        settings.lastOpenedFile = saveURL
                     }
 
-                    settings.lastOpenedFile = saveURL
                     settings.addRecentItem(url: saveURL, isDirectory: false)
                     completion(true)
                 }
@@ -750,11 +1185,45 @@ private struct DirectoryChangeModifier: ViewModifier {
     let appViewModel: AppViewModel
     let documentViewModel: DocumentViewModel
     let fileTreeViewModel: FileTreeViewModel
+    @Binding var linkNavigationDirectoryChange: LinkNavigationDirectoryChange?
+    @Binding var historyNavigationDirectoryChange: NavigationHistorySnapshot?
+    let onLinkNavigationFinished: () -> Void
+    let onHistoryNavigationFinished: () -> Void
 
     func body(content: Content) -> some View {
         content
             .onChange(of: appViewModel.rootDirectory) { _, newDirectory in
                 if let dir = newDirectory {
+                    if let snapshot = historyNavigationDirectoryChange,
+                       snapshot.rootDirectory == dir.markMarkCanonicalFileURL {
+                        Task { @MainActor in
+                            await fileTreeViewModel.loadDirectory(dir)
+                            await applyDirectorySnapshot(snapshot)
+                            historyNavigationDirectoryChange = nil
+                            onHistoryNavigationFinished()
+                        }
+                        return
+                    }
+
+                    if let change = linkNavigationDirectoryChange,
+                       change.rootURL == dir.markMarkCanonicalFileURL {
+                        fileTreeViewModel.activeNodeURL = nil
+                        Task { @MainActor in
+                            await fileTreeViewModel.loadDirectory(dir)
+                            switch change.targetKind {
+                            case .directory:
+                                await fileTreeViewModel.revealDirectory(change.targetURL)
+                            case .markdownFile:
+                                await fileTreeViewModel.revealMarkdownFile(change.targetURL)
+                            case .missing, .unsupportedFile:
+                                break
+                            }
+                            linkNavigationDirectoryChange = nil
+                            onLinkNavigationFinished()
+                        }
+                        return
+                    }
+
                     // 清除选中状态，避免旧选中 URL 与新目录状态不同步
                     // （例如：从单文件模式切到目录模式时，selectedFileURL 仍指向旧文件，
                     // 但 documentViewModel 已被清空，导致点击同一文件不触发 onChange）
@@ -768,6 +1237,21 @@ private struct DirectoryChangeModifier: ViewModifier {
                     fileTreeViewModel.clearDirectory(clearSelection: false)
                 }
             }
+    }
+
+    @MainActor
+    private func applyDirectorySnapshot(_ snapshot: NavigationHistorySnapshot) async {
+        if let selectedFileURL = snapshot.selectedFileURL {
+            await fileTreeViewModel.revealFile(selectedFileURL, select: true)
+            await documentViewModel.loadFile(at: selectedFileURL)
+        } else {
+            fileTreeViewModel.selectedFileURL = nil
+            documentViewModel.clearDocument()
+        }
+
+        if let activeNodeURL = snapshot.activeNodeURL {
+            await fileTreeViewModel.revealNode(activeNodeURL, selectFile: false)
+        }
     }
 }
 
@@ -791,6 +1275,11 @@ private struct SelectionChangeModifier: ViewModifier {
                         }
                         let node = findFileNode(in: fileTreeViewModel.nodes, url: url)
                         appViewModel.selectedFile = node
+                        if appViewModel.isSingleFileMode {
+                            settings.rememberOpenedSingleFile(url)
+                        } else {
+                            settings.rememberDirectorySelectedFile(url, rootDirectory: appViewModel.rootDirectory)
+                        }
                     }
                 } else {
                     if let deletedURL = oldURL,

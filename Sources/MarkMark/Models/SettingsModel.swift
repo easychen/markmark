@@ -56,6 +56,7 @@ final class SettingsModel {
         static let themeCustomOverrides = "com.markdownreader.themeCustomOverrides"
         static let lastOpenedDirectory  = "com.markdownreader.lastOpenedDirectory"
         static let lastOpenedFilePath   = "com.markdownreader.lastOpenedFilePath"
+        static let lastOpenedDirectorySelectedFile = "com.markdownreader.lastOpenedDirectorySelectedFile"
         static let isDefaultMdOpener    = "com.markdownreader.isDefaultMdOpener"
         static let enableCommandLine    = "com.markdownreader.enableCommandLine"
         static let recentItems          = "com.markdownreader.recentItems"
@@ -65,9 +66,11 @@ final class SettingsModel {
         static let lastUpdateCheckTime  = "com.markdownreader.lastUpdateCheckTime"
         static let enableQuickLookPreview = "com.markdownreader.enableQuickLookPreview"
         static let aiPromptTemplate     = "com.markdownreader.aiPromptTemplate"
+        static let rememberedSidebarVisible = "com.markdownreader.rememberedSidebarVisible"
+        static let rememberedOutlineVisible = "com.markdownreader.rememberedOutlineVisible"
     }
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
     // MARK: - 通用设置
 
@@ -120,6 +123,16 @@ final class SettingsModel {
     /// 启用 Quick Look 预览（在 Finder 中按空格键预览 Markdown 文件）
     var enableQuickLookPreview: Bool {
         didSet { defaults.set(enableQuickLookPreview, forKey: Keys.enableQuickLookPreview) }
+    }
+
+    /// 用户上次主动设置的左侧目录栏显隐状态
+    var rememberedSidebarVisible: Bool {
+        didSet { defaults.set(rememberedSidebarVisible, forKey: Keys.rememberedSidebarVisible) }
+    }
+
+    /// 用户上次主动设置的右侧大纲栏显隐状态
+    var rememberedOutlineVisible: Bool {
+        didSet { defaults.set(rememberedOutlineVisible, forKey: Keys.rememberedOutlineVisible) }
     }
 
     // MARK: - AI 提示词模板
@@ -192,6 +205,57 @@ final class SettingsModel {
         didSet {
             defaults.set(lastOpenedFile?.path, forKey: Keys.lastOpenedFilePath)
         }
+    }
+
+    /// 目录模式下上次选中并打开的文件 URL。
+    ///
+    /// `lastOpenedFile` 表示“单文件模式”恢复目标；目录模式需要同时恢复 root 与当前文档，
+    /// 因此使用独立 key，避免重新启动时把目录模式误判成单文件模式。
+    var lastOpenedDirectorySelectedFile: URL? {
+        didSet {
+            defaults.set(lastOpenedDirectorySelectedFile?.path, forKey: Keys.lastOpenedDirectorySelectedFile)
+        }
+    }
+
+    /// 记录目录模式打开的 root，并清除该 root 内的旧选中项。
+    func rememberOpenedDirectory(_ directory: URL) {
+        lastOpenedDirectory = directory.markMarkCanonicalFileURL
+        lastOpenedDirectorySelectedFile = nil
+        lastOpenedFile = nil
+    }
+
+    /// 记录单文件模式打开的文件。
+    func rememberOpenedSingleFile(_ file: URL) {
+        lastOpenedDirectory = nil
+        lastOpenedDirectorySelectedFile = nil
+        lastOpenedFile = file.markMarkCanonicalFileURL
+    }
+
+    /// 记录目录模式下当前选中/打开的文件；目标必须位于当前 root 内。
+    func rememberDirectorySelectedFile(_ file: URL, rootDirectory: URL?) {
+        guard let rootDirectory else { return }
+        let root = rootDirectory.markMarkCanonicalFileURL
+        let selected = file.markMarkCanonicalFileURL
+        guard MarkdownLinkNavigationPolicy.contains(selected, inOrEqualTo: root) else { return }
+
+        lastOpenedDirectory = root
+        lastOpenedDirectorySelectedFile = selected
+        lastOpenedFile = nil
+    }
+
+    /// 返回目录模式恢复时应重新打开的文件；若目标缺失、变成目录或越出 root，则忽略。
+    func restorableDirectorySelectedFile(for directory: URL) -> URL? {
+        let root = directory.markMarkCanonicalFileURL
+        guard let selected = lastOpenedDirectorySelectedFile?.markMarkCanonicalFileURL,
+              MarkdownLinkNavigationPolicy.contains(selected, inOrEqualTo: root)
+        else { return nil }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: selected.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue
+        else { return nil }
+
+        return selected
     }
 
     // MARK: - 最近打开记录
@@ -352,8 +416,8 @@ final class SettingsModel {
 
     // MARK: - 初始化（从 UserDefaults 恢复）
 
-    init() {
-        let defaults = UserDefaults.standard
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
 
         self.defaultDisplayMode = DisplayMode(rawValue: defaults.string(forKey: Keys.defaultDisplayMode) ?? "") ?? .rendered
         self.languagePref = LanguagePref(rawValue: defaults.string(forKey: Keys.languagePref) ?? "") ?? .auto
@@ -370,6 +434,8 @@ final class SettingsModel {
             defaults.set(true, forKey: Keys.enableQuickLookPreview)
         }
         self.enableQuickLookPreview = defaults.bool(forKey: Keys.enableQuickLookPreview)
+        self.rememberedSidebarVisible = defaults.object(forKey: Keys.rememberedSidebarVisible) as? Bool ?? false
+        self.rememberedOutlineVisible = defaults.object(forKey: Keys.rememberedOutlineVisible) as? Bool ?? false
         self.aiPromptTemplate = defaults.string(forKey: Keys.aiPromptTemplate) ?? ""
         self.skippedVersion = defaults.string(forKey: Keys.skippedVersion)
         self.lastUpdateCheckTime = defaults.object(forKey: Keys.lastUpdateCheckTime) as? Date
@@ -402,6 +468,15 @@ final class SettingsModel {
             self.lastOpenedFile = FileManager.default.fileExists(atPath: url.path) ? url : nil
         } else {
             self.lastOpenedFile = nil
+        }
+
+        if let selectedFilePath = defaults.string(forKey: Keys.lastOpenedDirectorySelectedFile) {
+            let url = URL(fileURLWithPath: selectedFilePath)
+            var isDir: ObjCBool = false
+            self.lastOpenedDirectorySelectedFile = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && !isDir.boolValue
+                ? url : nil
+        } else {
+            self.lastOpenedDirectorySelectedFile = nil
         }
 
         // 恢复最近打开记录（过滤掉已不存在的路径）
