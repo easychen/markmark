@@ -168,6 +168,9 @@ public enum L10n {
         // 编辑菜单：撤销 / 重做
         case editUndo
         case editRedo
+        // 导航菜单：后退 / 前进
+        case navigationBack
+        case navigationForward
         // 标注列表面板
         case titleBarAnnotationPanel
         case annotationGroupNew
@@ -263,6 +266,15 @@ public enum L10n {
         case findBarRegularExpression
         case findBarFind
         case findBarFindAndReplace
+
+        // Markdown 本地链接导航
+        case markdownLinkExpandRootTitle
+        case markdownLinkExpandRootMessage
+        case markdownLinkOpenCommonRoot
+        case markdownLinkMissingTitle
+        case markdownLinkMissingMessage
+        case markdownLinkUnsupportedTitle
+        case markdownLinkUnsupportedMessage
 
         // 导出 PDF
         case exportPDF
@@ -371,7 +383,7 @@ public enum L10n {
         .titleBarToggleOutline: "Toggle Outline",
         .titleBarCopyPath: "Copy Path",
         .titleBarCopyForAI: "Copy annotated doc for AI",
-        .titleBarCopyMenu: "Copy: CriticMarkup or for AI",
+        .titleBarCopyMenu: "Copy for AI / CriticMarkup (⌘⇧C for AI)",
         .copyForAIMenu: "Copy for AI (with instructions)",
         .copyCriticMenu: "Copy CriticMarkup",
         .copyFragmentsMenu: "Copy New Annotated Fragments",
@@ -386,6 +398,8 @@ public enum L10n {
         .discardAnnotationsConfirmMessage: "This removes every CriticMarkup mark and restores the original text. This cannot be undone.",
         .editUndo: "Undo",
         .editRedo: "Redo",
+        .navigationBack: "Back",
+        .navigationForward: "Forward",
         .titleBarAnnotationPanel: "Annotations",
         .annotationGroupNew: "New this session",
         .annotationGroupHistory: "Existing",
@@ -480,8 +494,15 @@ public enum L10n {
         .findBarRegularExpression: "Use Regular Expression",
         .findBarFind: "Find",
         .findBarFindAndReplace: "Find and Replace",
+        .markdownLinkExpandRootTitle: "Open linked location?",
+        .markdownLinkExpandRootMessage: "This link points outside the current folder. MarkMark will switch the sidebar root to:\n{root}\n\nTarget:\n{target}",
+        .markdownLinkOpenCommonRoot: "Open Common Folder",
+        .markdownLinkMissingTitle: "Linked item not found",
+        .markdownLinkMissingMessage: "The linked file or folder does not exist:\n{target}",
+        .markdownLinkUnsupportedTitle: "Unsupported link target",
+        .markdownLinkUnsupportedMessage: "MarkMark can open Markdown files and folders from relative links. This target is not supported:\n{target}",
         .exportPDF: "Export PDF\u{2026}",
-        .titleBarExportPDF: "Export PDF",
+        .titleBarExportPDF: "Export PDF (⌘⌥E) / HTML (⌘⇧E)",
         .exportPDFSuccess: "PDF exported successfully",
         .exportPDFFailed: "Failed to export PDF",
         .exportHTML: "Export HTML\u{2026}",
@@ -580,7 +601,7 @@ public enum L10n {
         .titleBarToggleOutline: "切换大纲",
         .titleBarCopyPath: "复制路径",
         .titleBarCopyForAI: "复制标注文档给 AI",
-        .titleBarCopyMenu: "复制：CriticMarkup 原文 或 给 AI（含说明）",
+        .titleBarCopyMenu: "复制给 AI / CriticMarkup 原文（给 AI：⌘⇧C）",
         .copyForAIMenu: "复制给 AI（含说明）",
         .copyCriticMenu: "复制 CriticMarkup",
         .copyFragmentsMenu: "复制本次新增的标注片段",
@@ -595,6 +616,8 @@ public enum L10n {
         .discardAnnotationsConfirmMessage: "将移除所有 CriticMarkup 标注并恢复原文，此操作无法撤销。",
         .editUndo: "撤销",
         .editRedo: "重做",
+        .navigationBack: "后退",
+        .navigationForward: "前进",
         .titleBarAnnotationPanel: "标注列表",
         .annotationGroupNew: "本次新增",
         .annotationGroupHistory: "历史标注",
@@ -689,8 +712,15 @@ public enum L10n {
         .findBarRegularExpression: "使用正则表达式",
         .findBarFind: "查找",
         .findBarFindAndReplace: "查找和替换",
+        .markdownLinkExpandRootTitle: "打开链接位置？",
+        .markdownLinkExpandRootMessage: "这个链接指向当前文件夹之外。MarkMark 会将左侧目录根切换为：\n{root}\n\n目标：\n{target}",
+        .markdownLinkOpenCommonRoot: "打开共同父目录",
+        .markdownLinkMissingTitle: "链接目标不存在",
+        .markdownLinkMissingMessage: "链接指向的文件或目录不存在：\n{target}",
+        .markdownLinkUnsupportedTitle: "不支持的链接目标",
+        .markdownLinkUnsupportedMessage: "MarkMark 仅支持通过相对链接打开 Markdown 文件和目录。此目标不支持：\n{target}",
         .exportPDF: "导出 PDF\u{2026}",
-        .titleBarExportPDF: "导出 PDF",
+        .titleBarExportPDF: "导出 PDF (⌘⌥E) / HTML (⌘⇧E)",
         .exportPDFSuccess: "PDF 导出成功",
         .exportPDFFailed: "PDF 导出失败",
         .exportHTML: "导出 HTML\u{2026}",
@@ -789,7 +819,7 @@ public enum L10n {
         .titleBarToggleOutline: "切換大綱",
         .titleBarCopyPath: "複製路徑",
         .titleBarCopyForAI: "複製標註文件給 AI",
-        .titleBarCopyMenu: "複製：CriticMarkup 原文 或 給 AI（含說明）",
+        .titleBarCopyMenu: "複製給 AI / CriticMarkup 原文（給 AI：⌘⇧C）",
         .copyForAIMenu: "複製給 AI（含說明）",
         .copyCriticMenu: "複製 CriticMarkup",
         .copyFragmentsMenu: "複製本次新增的標註片段",
@@ -804,6 +834,8 @@ public enum L10n {
         .discardAnnotationsConfirmMessage: "將移除所有 CriticMarkup 標註並恢復原文，此操作無法復原。",
         .editUndo: "復原",
         .editRedo: "重做",
+        .navigationBack: "後退",
+        .navigationForward: "前進",
         .titleBarAnnotationPanel: "標註清單",
         .annotationGroupNew: "本次新增",
         .annotationGroupHistory: "歷史標註",
@@ -898,8 +930,15 @@ public enum L10n {
         .findBarRegularExpression: "使用規則表達式",
         .findBarFind: "尋找",
         .findBarFindAndReplace: "尋找和取代",
+        .markdownLinkExpandRootTitle: "開啟連結位置？",
+        .markdownLinkExpandRootMessage: "這個連結指向目前資料夾之外。MarkMark 會將左側目錄根切換為：\n{root}\n\n目標：\n{target}",
+        .markdownLinkOpenCommonRoot: "開啟共同父目錄",
+        .markdownLinkMissingTitle: "連結目標不存在",
+        .markdownLinkMissingMessage: "連結指向的檔案或目錄不存在：\n{target}",
+        .markdownLinkUnsupportedTitle: "不支援的連結目標",
+        .markdownLinkUnsupportedMessage: "MarkMark 僅支援透過相對連結開啟 Markdown 檔案和目錄。此目標不支援：\n{target}",
         .exportPDF: "匯出 PDF\u{2026}",
-        .titleBarExportPDF: "匯出 PDF",
+        .titleBarExportPDF: "匯出 PDF (⌘⌥E) / HTML (⌘⇧E)",
         .exportPDFSuccess: "PDF 匯出成功",
         .exportPDFFailed: "PDF 匯出失敗",
         .exportHTML: "匯出 HTML\u{2026}",

@@ -184,14 +184,14 @@ struct OpenRequestCoordinatorTests {
         let store = UserDefaultsPendingOpenStore(defaults: defaults)
 
         store.store(fileURL)
-        #expect(store.pendingURL == fileURL)
-        #expect(defaults.string(forKey: "pendingOpenFilePath") == fileURL.path)
+        #expect(store.pendingURL == fileURL.markMarkCanonicalFileURL)
+        #expect(defaults.string(forKey: "pendingOpenFilePath") == fileURL.markMarkCanonicalFileURL.path)
         #expect(defaults.string(forKey: "pendingOpenDirectoryPath") == nil)
 
         store.store(directoryURL)
-        #expect(store.pendingURL == directoryURL)
+        #expect(store.pendingURL == directoryURL.markMarkCanonicalFileURL)
         #expect(defaults.string(forKey: "pendingOpenFilePath") == nil)
-        #expect(defaults.string(forKey: "pendingOpenDirectoryPath") == directoryURL.path)
+        #expect(defaults.string(forKey: "pendingOpenDirectoryPath") == directoryURL.markMarkCanonicalFileURL.path)
 
         store.clear()
         #expect(store.pendingURL == nil)

@@ -1,13 +1,13 @@
 # 分支策略
 
-> 本文档记录 MarkdownReader 的分支策略与发布方案。
+> 本文档记录 MarkMark 的分支策略与发布方案。
 
 ## 当前状态
 
 - `main` 分支为唯一开发线，版本号从 v2.0.0 起
 - 渲染引擎：WKWebView + cmark-gfm
-- 最低部署：macOS 26.0
-- Bundle ID：`com.markdownreader.app`
+- 最低部署：macOS 14.0
+- Bundle ID：`com.ft07.markmark`
 - 唯一外部依赖：swift-markdown
 
 ## 分支模型
@@ -27,8 +27,8 @@
 ## 版本发布
 
 - 版本号从 v2.0.0 开始，遵循语义化版本
-- Bundle ID：`com.markdownreader.app`
-- DMG 分发，文件名：`MarkdownReader-$VERSION.dmg`
+- Bundle ID：`com.ft07.markmark`
+- DMG/ZIP 分发，资产名：`MarkMark.dmg` / `MarkMark.zip`
 - GitHub Release tag：`v2.x.x`
 - CI 通过 `v*` tag 触发 `release.yml`
 

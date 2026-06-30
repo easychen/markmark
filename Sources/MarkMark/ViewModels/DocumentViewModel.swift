@@ -688,7 +688,7 @@ final class DocumentViewModel {
 
         // 监控文件所在目录（FSEventStream 不支持直接监控单个文件）
         let directory = url.deletingLastPathComponent()
-        fileWatcher.startWatching(url: directory) { [weak self] in
+        fileWatcher.startWatching(url: directory) { [weak self] _ in
             Task { @MainActor [weak self] in
                 await self?.checkExternalFileChange()
             }

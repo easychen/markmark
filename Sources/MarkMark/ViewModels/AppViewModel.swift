@@ -116,6 +116,20 @@ final class AppViewModel {
         }
     }
 
+    /// 应用用户记住的窗口 chrome 状态。用于恢复上次打开位置，不表示用户本次主动切换。
+    func applyRememberedChromeState(sidebarVisible: Bool, outlineVisible: Bool) {
+        isSidebarVisible = sidebarVisible
+        if sidebarVisible {
+            sidebarWidth = Self.defaultSidebarWidth
+        }
+
+        isOutlineVisible = outlineVisible
+        if outlineVisible {
+            isAnnotationPanelVisible = false
+            outlineWidth = Self.defaultOutlineWidth
+        }
+    }
+
     /// 切换标注列表面板显隐（与大纲互斥）
     func toggleAnnotationPanel() {
         withAnimation(.spring(duration: 0.25)) {
@@ -201,22 +215,27 @@ final class AppViewModel {
     }
 
     /// 打开目录
-    func openDirectory(_ url: URL) {
+    func openDirectory(_ url: URL, sidebarVisible: Bool = true) {
         rootDirectory = url
         isSingleFileMode = false
         singleFileURL = nil
         selectedFile = nil
-        // 目录模式恢复 Sidebar
-        if !isSidebarVisible {
+        if sidebarVisible {
+            // 目录模式默认恢复 Sidebar；恢复上次位置时可传入用户记住的状态覆盖默认值。
+            guard !isSidebarVisible else { return }
             withAnimation(.spring(duration: 0.25)) {
                 isSidebarVisible = true
                 sidebarWidth = Self.defaultSidebarWidth
+            }
+        } else if isSidebarVisible {
+            withAnimation(.spring(duration: 0.25)) {
+                isSidebarVisible = false
             }
         }
     }
 
     /// 打开单个文件（单文件模式，Sidebar 默认隐藏但可手动打开）
-    func openSingleFile(_ url: URL) {
+    func openSingleFile(_ url: URL, sidebarVisible: Bool = false) {
         // 先设置单文件模式属性，再清空 rootDirectory
         // 因为 rootDirectory 的 didSet 会调用 updateWindowTitle()
         // 如果先清空 rootDirectory，此时 isSingleFileMode/singleFileURL 尚未设置
@@ -225,7 +244,14 @@ final class AppViewModel {
         singleFileURL = url
         selectedFile = nil
         rootDirectory = nil
-        if isSidebarVisible {
+        if sidebarVisible {
+            if !isSidebarVisible {
+                withAnimation(.spring(duration: 0.25)) {
+                    isSidebarVisible = true
+                    sidebarWidth = Self.defaultSidebarWidth
+                }
+            }
+        } else if isSidebarVisible {
             withAnimation(.spring(duration: 0.25)) {
                 isSidebarVisible = false
             }

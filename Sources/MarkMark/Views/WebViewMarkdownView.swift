@@ -67,6 +67,8 @@ struct WebViewMarkdownView: NSViewRepresentable {
     var onVisibleLineChanged: ((Int) -> Void)?
     /// 返回是否成功定位并写入；失败时渲染层会闪一个「无法定位选区」提示。
     var onCriticAction: ((CriticActionPayload) -> Bool)?
+    /// 用户点击 Markdown 中的相对本地链接时，渲染层将 `mr:///...` 还原为本地文件 URL 后上报。
+    var onLocalLinkActivated: ((URL) -> Void)?
     /// CriticMarkup 选词工具条的本地化文案（键：delete/highlight/comment/replace/confirm/cancel/edit/commentHint/replaceHint/notFound）
     var criticLabels: [String: String] = [:]
 
@@ -294,14 +296,32 @@ struct WebViewMarkdownView: NSViewRepresentable {
                 return
             }
 
-            if url.scheme == "mr" || url.scheme == "about" {
+            let isMainFrameLinkClick = navigationAction.navigationType == .linkActivated
+                && (navigationAction.targetFrame?.isMainFrame ?? true)
+
+            if url.scheme == "mr" {
+                if isMainFrameLinkClick,
+                   let targetURL = MarkdownLinkNavigationPolicy.internalTargetURL(from: url) {
+                    parent.onLocalLinkActivated?(targetURL)
+                    decisionHandler(.cancel)
+                    return
+                }
+                decisionHandler(.allow)
+                return
+            }
+
+            if url.scheme == "about" {
+                decisionHandler(.allow)
+                return
+            }
+
+            if isSameDocumentAnchor(url) {
                 decisionHandler(.allow)
                 return
             }
 
             if url.scheme == "file" {
-                if navigationAction.targetFrame?.isMainFrame == true,
-                   navigationAction.navigationType == .linkActivated {
+                if isMainFrameLinkClick {
                     decisionHandler(.cancel)
                     return
                 }
@@ -311,6 +331,21 @@ struct WebViewMarkdownView: NSViewRepresentable {
 
             NSWorkspace.shared.open(url)
             decisionHandler(.cancel)
+        }
+
+        private func isSameDocumentAnchor(_ url: URL) -> Bool {
+            guard url.fragment != nil else { return false }
+
+            if url.scheme == "about" {
+                return true
+            }
+
+            guard url.scheme == "file",
+                  let baseURL = parent.fileURL?.deletingLastPathComponent() else {
+                return false
+            }
+
+            return URL(fileURLWithPath: url.path).markMarkCanonicalFileURL == baseURL.markMarkCanonicalFileURL
         }
 
         // MARK: WKScriptMessageHandler

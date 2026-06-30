@@ -6,6 +6,11 @@ struct SidebarView: View {
     let fileTreeViewModel: FileTreeViewModel
     let appViewModel: AppViewModel
     let documentViewModel: DocumentViewModel
+    var canNavigateBack: Bool = false
+    var canNavigateForward: Bool = false
+    var navigateBack: () -> Void = {}
+    var navigateForward: () -> Void = {}
+    var toggleSidebar: () -> Void = {}
     @Environment(\.language) private var language
     @Environment(\.themeColors) private var themeColors
     @FocusState private var isFileTreeFocused: Bool
@@ -19,45 +24,53 @@ struct SidebarView: View {
                     .padding(.leading, 12)
 
                 // Sidebar 隐藏按钮
-                Button {
-                    appViewModel.toggleSidebar()
-                } label: {
-                    Image(systemName: "sidebar.leading")
-                        .font(.system(size: 14))
-                        .foregroundStyle(themeColors.fgSecondary)
+                TitleBarIconButton(
+                    systemName: "sidebar.leading",
+                    helpText: L10n.tr(.titleBarToggleSidebar, language: language)
+                ) {
+                    toggleSidebar()
                 }
-                .buttonStyle(.plain)
-                .help(L10n.tr(.titleBarToggleSidebar, language: language))
                 .padding(.leading, 8)
 
                 // 打开按钮（与菜单 Cmd+O 功能一致，直接调用避免 WindowGroup 多实例重复弹窗）
-                Button {
+                TitleBarIconButton(
+                    systemName: "folder.fill",
+                    helpText: L10n.tr(.titleBarOpen, language: language)
+                ) {
                     OpenPanelHelper.show(language: language)
-                } label: {
-                    Image(systemName: "folder.fill")
-                        .font(.system(size: 14))
-                        .foregroundStyle(themeColors.fgSecondary)
                 }
-                .buttonStyle(.plain)
-                .help(L10n.tr(.titleBarOpen, language: language))
-                .padding(.leading, 4)
+                .padding(.leading, 2)
 
                 // 从剪贴板新建标注
-                Button {
+                TitleBarIconButton(
+                    systemName: "doc.on.clipboard",
+                    helpText: "\(L10n.tr(.newFromClipboard, language: language)) (⌘N)"
+                ) {
                     NotificationCenter.default.post(name: .newFromClipboard, object: nil)
-                } label: {
-                    Image(systemName: "doc.on.clipboard")
-                        .font(.system(size: 14))
-                        .foregroundStyle(themeColors.fgSecondary)
                 }
-                .buttonStyle(.plain)
-                .help(L10n.tr(.newFromClipboard, language: language))
-                .padding(.leading, 4)
+                .padding(.leading, 2)
+
+                TitleBarIconButton(
+                    systemName: "chevron.left",
+                    helpText: "\(L10n.tr(.navigationBack, language: language)) (⌘[)",
+                    isEnabled: canNavigateBack,
+                    action: navigateBack
+                )
+                .padding(.leading, 8)
+
+                TitleBarIconButton(
+                    systemName: "chevron.right",
+                    helpText: "\(L10n.tr(.navigationForward, language: language)) (⌘])",
+                    isEnabled: canNavigateForward,
+                    action: navigateForward
+                )
+                .padding(.leading, 2)
 
                 Spacer()
             }
             .frame(height: 50)
             .background(WindowDragArea())
+            .zIndex(10)
 
             if appViewModel.isSingleFileMode {
                 singleFileView

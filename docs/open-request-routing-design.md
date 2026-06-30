@@ -217,11 +217,11 @@ final class WindowRouter {
 
 ## 9. 测试策略
 
-当前项目暂无测试 target。建议本次改造补最小 Swift test target，优先测试 coordinator 的外部行为，而不是测试 AppKit 细节。
+项目已有 `MarkMarkTests` 测试 target。本改造的自动化重点是 coordinator / router / pasteboard 等 seam；AppKit、Finder、Dock 和 Services 的真实系统行为仍需要发布前手工抽查。
 
 ### 9.1 推荐测试 seam
 
-最高优先级 seam：`OpenRequestCoordinator`。
+最高优先级 seam：`OpenRequestCoordinator`，其次是 Services pasteboard 解析和 `WindowRouter` 的 internal/external 分发。
 
 测试不应关心内部是否使用 UserDefaults、NotificationCenter 或 DispatchQueue；只验证输入请求最终产生的 disposition。
 

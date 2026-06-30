@@ -6,13 +6,16 @@ import Foundation
 final class FileSystemWatcher: @unchecked Sendable {
 
     /// 变化回调
-    private var onChange: (@Sendable () -> Void)?
+    private var onChange: (@Sendable ([URL]) -> Void)?
 
     /// FSEventStream 引用
     private var stream: FSEventStreamRef?
 
     /// 防抖定时器
     private var debounceWorkItem: DispatchWorkItem?
+
+    /// 防抖窗口内累积的变化路径。
+    private var pendingChangedPaths: Set<URL> = []
 
     /// 防抖间隔（秒）
     private let debounceInterval: TimeInterval
@@ -35,7 +38,7 @@ final class FileSystemWatcher: @unchecked Sendable {
     /// - Parameters:
     ///   - url: 要监控的目录 URL
     ///   - onChange: 检测到变化时的回调（在主线程执行）
-    func startWatching(url: URL, onChange: @escaping @Sendable () -> Void) {
+    func startWatching(url: URL, onChange: @escaping @Sendable ([URL]) -> Void) {
         // 如果已经在监控同一个目录，只更新回调
         if let watchedURL = watchedURL, watchedURL == url {
             self.onChange = onChange
@@ -67,7 +70,8 @@ final class FileSystemWatcher: @unchecked Sendable {
                 let watcher = Unmanaged<FileSystemWatcher>.fromOpaque(info).takeUnretainedValue()
                 // 防止 stopWatching 后残余回调访问已失效的实例
                 guard !watcher.isInvalidated else { return }
-                watcher.handleEvent()
+                let changedPaths = FileSystemWatcher.eventURLs(from: eventPaths, count: numEvents)
+                watcher.handleEvent(changedPaths: changedPaths)
             },
             &context,
             pathsToWatch,
@@ -100,21 +104,36 @@ final class FileSystemWatcher: @unchecked Sendable {
 
         debounceWorkItem?.cancel()
         debounceWorkItem = nil
+        pendingChangedPaths.removeAll()
         onChange = nil
         watchedURL = nil
     }
 
     /// 处理文件系统事件（防抖：连续变化合并为一次刷新）
-    private func handleEvent() {
+    private func handleEvent(changedPaths: [URL]) {
+        pendingChangedPaths.formUnion(changedPaths.map(\.markMarkCanonicalFileURL))
+
         // 取消之前的防抖定时器
         debounceWorkItem?.cancel()
 
         // 创建新的防抖定时器，在 debounceInterval 后执行回调
         let workItem = DispatchWorkItem { [weak self] in
-            self?.onChange?()
+            guard let self else { return }
+            let paths = Array(self.pendingChangedPaths)
+            self.pendingChangedPaths.removeAll()
+            self.onChange?(paths)
         }
         debounceWorkItem = workItem
 
         DispatchQueue.main.asyncAfter(deadline: .now() + debounceInterval, execute: workItem)
+    }
+
+    private static func eventURLs(from eventPaths: UnsafeMutableRawPointer, count: Int) -> [URL] {
+        guard count > 0 else { return [] }
+        let paths = unsafeBitCast(eventPaths, to: NSArray.self)
+        return paths.compactMap { item in
+            guard let path = item as? String else { return nil }
+            return URL(fileURLWithPath: path).markMarkCanonicalFileURL
+        }
     }
 }

@@ -6,13 +6,15 @@ import os
 ///
 /// macOS 15+ 上 SwiftUI WindowGroup 可能在启动时先创建 untitled 默认窗口。
 /// 修复策略：
-/// - 显式外部打开：阻止 untitled 默认窗口，URL 直接路由到 URL 绑定/兜底窗口
-/// - 直接启动 / Dock reopen：确认无显式 URL 后，主动创建 welcome/restore 窗口
+/// - 启动完成路由由 AppKit 启动意图 + SwiftUI 内容窗口 ready 事件共同触发
+/// - 显式外部打开：URL 路由优先于恢复上次位置，并收敛冷启动默认窗口
+/// - 直接启动 / Dock reopen：确认无显式 URL 后，复用内容窗口执行 welcome/restore
 /// - 热启动：外部打开走多窗口，同 URL 聚焦；内部打开替换当前 key window
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let logger = Logger(subsystem: "com.ft07.markmark", category: "AppDelegate")
+    private let launchStartedAt = Date()
 
     /// 冷启动时记录待处理的文件 URL
     var pendingOpenFileURL: URL?
@@ -23,10 +25,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 应用是否已经完成启动（用于区分冷启动和热启动）
     private var didFinishLaunching = false
 
-    /// SwiftUI 启动完成后，restore/welcome 会延迟一小段时间触发。
-    /// 如果 LaunchServices 的显式打开事件在这段窗口内才到达，必须仍然压过恢复会话。
+    /// 启动完成路由只在真实事件到达后触发：
+    /// AppKit 启动意图 + SwiftUI 内容窗口 ready + applicationDidFinishLaunching。
     private var didRouteLaunchCompletion = false
-    private var receivedExplicitOpenBeforeLaunchCompletion = false
+    private var shouldPruneLateColdExplicitOpenAfterDirectRoute = false
+    private var launchRoutingState = LaunchCompletionRoutingState()
+    private weak var launchReadyWindow: NSWindow?
+    private var contentWindowReadyObserver: NSObjectProtocol?
 
     /// Finder Services 冷启动时，SwiftUI WindowGroup / openWindow 可能尚未就绪。
     /// 先暂存服务传入的目录，启动完成并拿到 WindowRouter 后再打开，避免服务请求卡住 Finder。
@@ -47,17 +52,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         logger.info("applicationWillFinishLaunching")
         NSApp.servicesProvider = self
+        installContentWindowReadyObserver()
     }
 
-    /// 阻止 AppKit/SwiftUI 在启动时抢先创建 untitled/nil 默认窗口。
-    /// 直接启动需要的 welcome/restore 窗口由 launch completion 明确创建；
-    /// Finder/拖拽/打开方式等显式 URL 则只创建目标 URL 窗口。
+    /// 允许普通直接启动创建 SwiftUI 的 untitled/nil 默认窗口。
+    ///
+    /// 这里不能全局返回 `false`：当用户从 Dock/Finder 直接打开 App、且
+    /// 没有显式 URL 事件时，SwiftUI `WindowGroup(for:)` 需要这个 nil 窗口
+    /// 来承载欢迎页/恢复上次位置逻辑。若完全阻止 untitled 窗口，LaunchServices
+    /// 路径下应用会在启动早期没有任何可用窗口，表现为“点了打不开”。
+    ///
+    /// 显式 URL 打开仍由 `application(_:open:)` / launch completion 收敛到目标
+    /// URL 窗口，并通过后续 prune 避免旧的默认窗口干扰。
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
-        false
+        launchRoutingState.markUntitledLaunchRequest()
+        tryRouteLaunchCompletion()
+        return true
     }
 
     func applicationOpenUntitledFile(_ sender: NSApplication) -> Bool {
-        false
+        launchRoutingState.markUntitledLaunchRequest()
+        tryRouteLaunchCompletion()
+        return false
     }
 
     /// 禁用 AppKit/SwiftUI 的系统窗口状态恢复。MarkMark 自己通过
@@ -140,22 +156,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         logger.info("application(_:open:) called with \(urls.count) URLs, didFinish=\(self.didFinishLaunching)")
         guard let first = urls.first else { return }
-        if !didRouteLaunchCompletion {
-            receivedExplicitOpenBeforeLaunchCompletion = true
-        }
 
-        if didFinishLaunching {
+        if didFinishLaunching && didRouteLaunchCompletion {
             openRequestCoordinator.handleExternalOpen(
                 urls: urls,
                 reason: .finderOpen,
                 isLaunchCompleted: true
             )
+            if shouldPruneLateColdExplicitOpenAfterDirectRoute,
+               Date().timeIntervalSince(launchStartedAt) < 3.0 {
+                shouldPruneLateColdExplicitOpenAfterDirectRoute = false
+                scheduleExclusiveColdExplicitWindowPrune(keeping: first)
+                scheduleDirectLaunchDuplicateWindowPrune()
+            } else if shouldPruneLateColdExplicitOpenAfterDirectRoute {
+                shouldPruneLateColdExplicitOpenAfterDirectRoute = false
+            }
         } else {
             // 冷启动：不要写 UserDefaults pending 与 SwiftUI URL WindowGroup 竞争。
             // 先只在 AppDelegate 内存里记录显式 URL；启动完成后如果 SwiftUI
             // 已经创建了 URL 绑定窗口就聚焦它，否则再补开一次。
             rememberPendingOpenURL(first)
             logger.info("Cold start: remembered explicit URL for post-launch routing")
+            tryRouteLaunchCompletion()
         }
     }
 
@@ -175,10 +197,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         logger.info("Services entry opening \(urls.count) file/folder URL(s)")
         if !didRouteLaunchCompletion {
-            receivedExplicitOpenBeforeLaunchCompletion = true
+            launchRoutingState.markExplicitIntentWithoutURL()
         }
         pendingServiceOpenURLs = urls
         bringApplicationToFront()
+        tryRouteLaunchCompletion()
 
         // 让 Finder 的 Services 调用尽快返回；实际打开目录等 SwiftUI openWindow 注册后异步完成。
         DispatchQueue.main.async { [weak self] in
@@ -398,10 +421,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 把启动 / Dock reopen 产生的恢复类通知投递给确定的内容窗口。
+    ///
+    /// 事件驱动启动路由会比 SwiftUI 的 `controlActiveState == .key` 环境刷新更早；
+    /// 如果继续依赖 `onActiveReceive`，通知可能在窗口刚 `makeKeyAndOrderFront`
+    /// 但 SwiftUI 还未标记为 key 时被丢弃，表现为直接启动不恢复上次单文件。
+    fileprivate func postWindowRoutedNotification(_ name: Notification.Name) {
+        let targetWindow = launchReadyWindow
+            ?? NSApp.keyWindow
+            ?? NSApp.mainWindow
+            ?? NSApp.windows.first {
+                $0.canBecomeKey && !($0 is NSPanel) && !$0.isSheet
+            }
+        NotificationCenter.default.post(name: name, object: targetWindow)
+    }
+
     /// 记录冷启动显式打开请求，确保它优先于恢复上次位置。
     /// UserDefaults pending 由 OpenRequestCoordinator/PendingOpenStore 负责；这里仅保留
     /// AppDelegate 级别的启动期标记，用于 applicationDidFinishLaunching 的 restore guard。
     private func rememberPendingOpenURL(_ url: URL) {
+        launchRoutingState.markExplicitURL(url)
         var isDir: ObjCBool = false
         FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
         if isDir.boolValue {
@@ -424,6 +463,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingOpenStore.clear()
     }
 
+    private func installContentWindowReadyObserver() {
+        guard contentWindowReadyObserver == nil else { return }
+        contentWindowReadyObserver = NotificationCenter.default.addObserver(
+            forName: .contentWindowReadyForLaunchRouting,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let readyWindow = notification.object as? NSWindow
+            let isUntitledLaunchWindow = notification.userInfo?["isUntitledLaunchWindow"] as? Bool == true
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if let window = readyWindow {
+                    self.launchReadyWindow = window
+                }
+                if isUntitledLaunchWindow {
+                    self.launchRoutingState.markUntitledLaunchRequest()
+                }
+                self.launchRoutingState.markContentWindowReady()
+                self.tryRouteLaunchCompletion()
+
+                if !self.pendingServiceOpenURLs.isEmpty {
+                    self.openPendingServiceURLsWhenReady()
+                }
+            }
+        }
+    }
+
     // MARK: - 应用生命周期
 
     /// 应用启动完成后，处理冷启动场景
@@ -440,84 +506,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         didFinishLaunching = true
+        launchRoutingState.markDidFinishLaunching()
         logger.info("applicationDidFinishLaunching — pendingFile: \(self.pendingOpenFileURL != nil), pendingDir: \(self.pendingOpenDirectoryURL != nil)")
 
-        // 延迟处理，确保 SwiftUI WindowGroup 窗口已创建，也给 LaunchServices
-        // 显式 open 事件一个到达窗口，避免“拖 B 启动 App”先恢复 A 再打开 B。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-            guard let self else { return }
+        tryRouteLaunchCompletion()
+    }
 
-            // 注册窗口拖拽：绕过 SwiftUI .onDrop，直接使用 AppKit NSDraggingDestination
-            self.installFileDropHandler()
+    func applicationDidBecomeActive(_ notification: Notification) {
+        launchRoutingState.markDidBecomeActive()
+        tryRouteLaunchCompletion()
+    }
 
-            // 清理冷启动时的待处理 URL 属性
-            // ContentView.task 已通过 UserDefaults 读取并处理，无需再发通知
-            // 同时检查 UserDefaults 中是否还有待处理路径（application(_:open:) 可能延迟调用）
-            // 如果有待处理路径，说明文件打开事件即将到来，不应发送 .restoreLastLocation
-            if let rememberedURL = self.rememberedLaunchOpenURL() {
-                self.pendingOpenFileURL = nil
-                self.pendingOpenDirectoryURL = nil
-                if WindowRouter.shared.hasRegisteredWindow(for: rememberedURL) {
-                    self.logger.info("Cold start: remembered explicit open already has a registered window: \(rememberedURL.path)")
-                    WindowRouter.shared.openWindow(for: rememberedURL)
-                    self.scheduleActivationPulse()
+    private func tryRouteLaunchCompletion() {
+        guard !didRouteLaunchCompletion else { return }
+
+        launchRoutingState.updatePendingStoreURL(pendingOpenStore.pendingURL)
+        switch launchRoutingState.decision {
+        case .wait:
+            return
+        case .routeExplicitURL(let url):
+            completeLaunchRouting {
+                shouldPruneLateColdExplicitOpenAfterDirectRoute = false
+                pendingOpenFileURL = nil
+                pendingOpenDirectoryURL = nil
+                if WindowRouter.shared.hasRegisteredWindow(for: url) {
+                    logger.info("Cold start: explicit open already has a registered window: \(url.path)")
+                    WindowRouter.shared.openWindow(for: url)
+                    scheduleActivationPulse()
                 } else {
-                    self.logger.info("Cold start: routing remembered explicit open once: \(rememberedURL.path)")
-                    self.openRequestCoordinator.handleExternalOpen(
-                        urls: [rememberedURL],
+                    logger.info("Cold start: routing explicit open once: \(url.path)")
+                    openRequestCoordinator.handleExternalOpen(
+                        urls: [url],
                         reason: .finderOpen,
                         isLaunchCompleted: true
                     )
                 }
-                self.scheduleExclusiveColdExplicitDirectoryWindowPruneIfNeeded(keeping: rememberedURL)
-                self.pendingOpenStore.clear()
-            } else if let pendingURL = self.pendingOpenStore.pendingURL {
-                if WindowRouter.shared.hasRegisteredWindow(for: pendingURL) {
-                    self.logger.info("Cold start: pending explicit open already has a registered window: \(pendingURL.path)")
-                    self.pendingOpenStore.clear()
-                    self.scheduleActivationPulse()
-                } else {
-                    self.logger.info("Cold start: routing pending explicit open once: \(pendingURL.path)")
-                    self.pendingOpenStore.clear()
-                    self.openRequestCoordinator.handleExternalOpen(
-                        urls: [pendingURL],
-                        reason: .finderOpen,
-                        isLaunchCompleted: true
-                    )
-                }
-                self.scheduleExclusiveColdExplicitDirectoryWindowPruneIfNeeded(keeping: pendingURL)
-            } else if self.receivedExplicitOpenBeforeLaunchCompletion {
-                self.logger.info("Cold start: explicit open handled; restore suppressed")
-            } else {
-                // 只有确认不是显式 URL 启动后，才允许把 SwiftUI 预建的隐藏窗口显示出来，
-                // 再执行 MarkMark 自己的欢迎页/恢复上次位置逻辑。
-                if !self.hasVisibleWindows() {
-                    self.activateFirstHiddenWindow()
-                }
-                self.openRequestCoordinator.handleLaunchCompleted()
+                scheduleExclusiveColdExplicitWindowPrune(keeping: url)
+                pendingOpenStore.clear()
             }
-            self.didRouteLaunchCompletion = true
-
-            if !self.pendingServiceOpenURLs.isEmpty {
-                self.openPendingServiceURLsWhenReady()
+        case .suppressRestore:
+            completeLaunchRouting {
+                shouldPruneLateColdExplicitOpenAfterDirectRoute = false
+                logger.info("Cold start: explicit open handled; restore suppressed")
+            }
+        case .routeDirectLaunch:
+            completeLaunchRouting {
+                shouldPruneLateColdExplicitOpenAfterDirectRoute = true
+                // 只有确认不是显式 URL 启动后，才允许把 SwiftUI 预建窗口显示出来，
+                // 再执行 MarkMark 自己的欢迎页/恢复上次位置逻辑。
+                if let launchReadyWindow {
+                    focusLaunchReadyWindow(launchReadyWindow)
+                } else if !hasVisibleWindows() {
+                    activateFirstHiddenWindow()
+                }
+                openRequestCoordinator.handleLaunchCompleted()
+                scheduleDirectLaunchDuplicateWindowPrune()
             }
         }
     }
 
-    /// 冷启动显式打开目录是排他入口：拖拽目录/打开方式目录应压过默认欢迎页和系统恢复窗口。
-    ///
-    /// 这个强清理只限定在目录冷启动：文件冷启动需要保留 SwiftUI 的 openWindow 宿主，
-    /// 否则后续热打开文件会退化成替换当前窗口，破坏多窗口语义。
-    private func scheduleExclusiveColdExplicitDirectoryWindowPruneIfNeeded(keeping url: URL) {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
-              isDirectory.boolValue else { return }
-        scheduleExclusiveColdExplicitWindowPrune(keeping: url)
+    private func focusLaunchReadyWindow(_ window: NSWindow) {
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        if !window.isVisible {
+            window.setIsVisible(true)
+        }
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// SwiftUI 可能已在目标 URL 注册前先创建旧窗口，因此这里等目标窗口注册后再多次收敛。
+    private func completeLaunchRouting(_ route: () -> Void) {
+        // 注册窗口拖拽：绕过 SwiftUI .onDrop，直接使用 AppKit NSDraggingDestination
+        installFileDropHandler()
+        route()
+        didRouteLaunchCompletion = true
+        launchRoutingState.markRouted()
+
+        if !pendingServiceOpenURLs.isEmpty {
+            openPendingServiceURLsWhenReady()
+        }
+    }
+
+    /// 冷启动显式打开 URL 是排他入口：拖拽/打开方式/双击文件应压过默认欢迎页和系统恢复窗口。
+    ///
+    /// SwiftUI 可能先为直接启动创建 nil 窗口，再收到显式 URL 窗口；这里等目标 URL
+    /// 窗口注册后再多次收敛，关闭默认/旧窗口。目标文件窗口自身也会注册
+    /// `WindowRouter.open`，所以不需要保留 nil 宿主窗口来维持后续多窗口能力。
     private func scheduleExclusiveColdExplicitWindowPrune(keeping url: URL, attempt: Int = 0) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+        let delay = attempt == 0 ? 0.02 : 0.15
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             if WindowRouter.shared.hasRegisteredWindow(for: url) {
                 WindowRouter.shared.closeVisibleContentWindows(except: url)
@@ -527,6 +606,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.scheduleExclusiveColdExplicitWindowPrune(keeping: url, attempt: attempt + 1)
             }
         }
+    }
+
+    /// 普通直接启动没有显式 URL，但 macOS/SwiftUI 可能同时创建一个 nil 默认窗口和一个
+    /// restore/welcome 窗口。冷启动完成后只保留当前 key/main 内容窗口，避免“打开 App
+    /// 后出现两个窗口”。仅用于 launch completion 的无显式 URL 分支，不影响热打开多窗口。
+    private func scheduleDirectLaunchDuplicateWindowPrune(attempt: Int = 0) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            self.closeDuplicateVisibleContentWindowsKeepingKey()
+            if attempt < 6 {
+                self.scheduleDirectLaunchDuplicateWindowPrune(attempt: attempt + 1)
+            }
+        }
+    }
+
+    private func closeDuplicateVisibleContentWindowsKeepingKey() {
+        let contentWindows = NSApp.windows.filter {
+            $0.isVisible && $0.canBecomeKey && !($0 is NSPanel) && !$0.isSheet
+        }
+        guard contentWindows.count > 1 else { return }
+
+        let windowToKeep = NSApp.keyWindow ?? NSApp.mainWindow ?? contentWindows[0]
+        for window in contentWindows where window !== windowToKeep {
+            window.close()
+        }
+        windowToKeep.orderFrontRegardless()
+        windowToKeep.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Dock 点击处理
@@ -598,7 +705,7 @@ private final class AppDelegateOpenRequestRouter: OpenRequestRouting {
 
     func restoreLastLocation() {
         if appDelegate?.hasUsableWindow() == true {
-            NotificationCenter.default.post(name: .restoreLastLocation, object: nil)
+            appDelegate?.postWindowRoutedNotification(.restoreLastLocation)
         } else {
             appDelegate?.restoreLastLocationOrOpenWelcomeFallback()
         }
@@ -606,7 +713,7 @@ private final class AppDelegateOpenRequestRouter: OpenRequestRouting {
 
     func resetToWelcome() {
         if appDelegate?.hasUsableWindow() == true {
-            NotificationCenter.default.post(name: .resetToWelcome, object: nil)
+            appDelegate?.postWindowRoutedNotification(.resetToWelcome)
         } else {
             appDelegate?.openFallbackWelcomeWindow()
         }
