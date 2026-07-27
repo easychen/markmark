@@ -32,6 +32,11 @@ public enum L10n {
         case settingsGeneralRenderedWidthDesc
         case settingsGeneralMaxWidthFollowsWindow
 
+        // 设置 - 数学公式
+        case settingsGeneralMathTitle
+        case settingsGeneralMathDesc
+        case settingsGeneralEnableMath
+
         // 设置 - 启动
         case settingsGeneralStartupTitle
         case settingsGeneralReopenLastLocation
@@ -307,6 +312,9 @@ public enum L10n {
         .settingsGeneralRenderedWidthTitle: "Rendered Width",
         .settingsGeneralRenderedWidthDesc: "Control the maximum width of rendered content. When off, a fixed width is used.",
         .settingsGeneralMaxWidthFollowsWindow: "Follow window width",
+        .settingsGeneralMathTitle: "Math Formulas",
+        .settingsGeneralMathDesc: "Render LaTeX math in $...$ and $$...$$. Turn off if dollar amounts in your documents are mistaken for formulas.",
+        .settingsGeneralEnableMath: "Render LaTeX math formulas",
         .settingsGeneralStartupTitle: "Startup",
         .settingsGeneralReopenLastLocation: "Reopen last location on launch",
         .settingsGeneralFileTreeTitle: "File Tree",
@@ -525,6 +533,9 @@ public enum L10n {
         .settingsGeneralRenderedWidthTitle: "渲染宽度",
         .settingsGeneralRenderedWidthDesc: "控制渲染内容的最大宽度。关闭时使用固定宽度。",
         .settingsGeneralMaxWidthFollowsWindow: "跟随窗口宽度",
+        .settingsGeneralMathTitle: "数学公式",
+        .settingsGeneralMathDesc: "渲染 $...$ 与 $$...$$ 中的 LaTeX 公式。若文档中的美元金额被误判为公式，可关闭此项。",
+        .settingsGeneralEnableMath: "渲染 LaTeX 数学公式",
         .settingsGeneralStartupTitle: "启动",
         .settingsGeneralReopenLastLocation: "启动时重新打开上次位置",
         .settingsGeneralFileTreeTitle: "文件树",
@@ -743,6 +754,9 @@ public enum L10n {
         .settingsGeneralRenderedWidthTitle: "渲染寬度",
         .settingsGeneralRenderedWidthDesc: "控制渲染內容的最大寬度。關閉時使用固定寬度。",
         .settingsGeneralMaxWidthFollowsWindow: "跟隨視窗寬度",
+        .settingsGeneralMathTitle: "數學公式",
+        .settingsGeneralMathDesc: "渲染 $...$ 與 $$...$$ 中的 LaTeX 公式。若文件中的美元金額被誤判為公式，可關閉此項。",
+        .settingsGeneralEnableMath: "渲染 LaTeX 數學公式",
         .settingsGeneralStartupTitle: "啟動",
         .settingsGeneralReopenLastLocation: "啟動時重新開啟上次位置",
         .settingsGeneralFileTreeTitle: "檔案樹",

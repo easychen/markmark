@@ -57,6 +57,16 @@ struct GeneralSettingsView: View {
 
             SettingsDivider()
 
+            // 数学公式
+            SettingsSection(
+                title: L10n.tr(.settingsGeneralMathTitle, language: language),
+                description: L10n.tr(.settingsGeneralMathDesc, language: language)
+            ) {
+                Toggle(L10n.tr(.settingsGeneralEnableMath, language: language), isOn: $settings.enableMathRendering)
+            }
+
+            SettingsDivider()
+
             // 启动行为
             SettingsSection(
                 title: L10n.tr(.settingsGeneralStartupTitle, language: language)

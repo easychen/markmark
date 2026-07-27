@@ -25,8 +25,8 @@ public enum MarkdownHTMLService {
         }
     }
 
-    public static func render(_ markdown: String, baseURL: URL? = nil) -> RenderResult {
-        let preprocessed = preprocess(markdown)
+    public static func render(_ markdown: String, baseURL: URL? = nil, mathEnabled: Bool = true) -> RenderResult {
+        let preprocessed = preprocess(markdown, mathEnabled: mathEnabled)
         // 关闭智能排版（.disableSmartOpts）：避免 swift-markdown 把直引号 " 转成弯引号 “”、
         // -- 转破折号、... 转省略号。否则渲染文本与源码不再逐字一致，CriticMarkup 选词定位会失败。
         // 保留源码位置信息（不传 .disableSourcePosOpts），data-line / 大纲仍需要它。
@@ -39,8 +39,8 @@ public enum MarkdownHTMLService {
         )
     }
 
-    public static func renderWithInlineImages(_ markdown: String, baseURL: URL? = nil) -> RenderResult {
-        let preprocessed = preprocess(markdown)
+    public static func renderWithInlineImages(_ markdown: String, baseURL: URL? = nil, mathEnabled: Bool = true) -> RenderResult {
+        let preprocessed = preprocess(markdown, mathEnabled: mathEnabled)
         // 关闭智能排版（.disableSmartOpts）：避免 swift-markdown 把直引号 " 转成弯引号 “”、
         // -- 转破折号、... 转省略号。否则渲染文本与源码不再逐字一致，CriticMarkup 选词定位会失败。
         // 保留源码位置信息（不传 .disableSourcePosOpts），data-line / 大纲仍需要它。
@@ -53,10 +53,14 @@ public enum MarkdownHTMLService {
         )
     }
 
-    public static func buildFullHTML(content: String, themeCSS: String, contentPadding: CGFloat, maxContentWidthFollowsWindow: Bool = false, baseURL: URL?, isDark: Bool = true) -> String {
-        let renderResult = render(content, baseURL: baseURL)
+    public static func buildFullHTML(content: String, themeCSS: String, contentPadding: CGFloat, maxContentWidthFollowsWindow: Bool = false, baseURL: URL?, isDark: Bool = true, mathEnabled: Bool = true) -> String {
+        let renderResult = render(content, baseURL: baseURL, mathEnabled: mathEnabled)
 
         let baseURLAttr = baseURL != nil ? " data-base-url=\"\(baseURL!.path.addingXMLAttributeEscapes)\"" : ""
+
+        // 关闭数学公式时不加载 KaTeX：markdown-reader.js 检测到 katex 未定义会跳过公式渲染
+        let katexCSS = mathEnabled ? "<link rel=\"stylesheet\" href=\"mr:///css/katex.min.css\">\n    " : ""
+        let katexJS = mathEnabled ? "<script src=\"mr:///js/katex.min.js\"></script>\n    " : ""
 
         return """
         <!DOCTYPE html>
@@ -66,8 +70,7 @@ public enum MarkdownHTMLService {
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <link rel="stylesheet" href="mr:///css/markdown.css">
             <link rel="stylesheet" href="mr:///css/scroll.css">
-            <link rel="stylesheet" href="mr:///css/katex.min.css">
-            <style id="mr-theme-style">\(themeCSS)</style>
+            \(katexCSS)<style id="mr-theme-style">\(themeCSS)</style>
             <style>
             :root { --content-padding: \(contentPadding)px; --content-max-width: \(maxContentWidthFollowsWindow ? "none" : "980px"); }
             </style>
@@ -79,8 +82,7 @@ public enum MarkdownHTMLService {
                 </div>
             </div>
             <script src="mr:///js/mermaid.min.js"></script>
-            <script src="mr:///js/katex.min.js"></script>
-            <script src="mr:///js/prism-core.min.js"></script>
+            \(katexJS)<script src="mr:///js/prism-core.min.js"></script>
             <script src="mr:///js/prism-autoloader.min.js"></script>
             <script>
             Prism.plugins.autoloader.languages_path = 'mr:///js/';
@@ -91,16 +93,19 @@ public enum MarkdownHTMLService {
         """
     }
 
-    public static func buildContentAwareHTML(content: String, themeCSS: String, contentPadding: CGFloat, baseURL: URL?, isDark: Bool, hasMermaid: Bool, hasKaTeX: Bool, inlineImages: Bool = false, isQuickLook: Bool = false) -> String {
-        let renderResult = inlineImages ? renderWithInlineImages(content, baseURL: baseURL) : render(content, baseURL: baseURL)
+    public static func buildContentAwareHTML(content: String, themeCSS: String, contentPadding: CGFloat, baseURL: URL?, isDark: Bool, hasMermaid: Bool, hasKaTeX: Bool, inlineImages: Bool = false, isQuickLook: Bool = false, mathEnabled: Bool = true) -> String {
+        let renderResult = inlineImages
+            ? renderWithInlineImages(content, baseURL: baseURL, mathEnabled: mathEnabled)
+            : render(content, baseURL: baseURL, mathEnabled: mathEnabled)
 
         let baseURLAttr = baseURL != nil ? " data-base-url=\"\(baseURL!.path.addingXMLAttributeEscapes)\"" : ""
+        let needsKaTeX = hasKaTeX && mathEnabled
 
         var scriptTags = ""
         if hasMermaid {
             scriptTags += "<script src=\"mr:///js/mermaid.min.js\"></script>\n"
         }
-        if hasKaTeX {
+        if needsKaTeX {
             scriptTags += "<script src=\"mr:///js/katex.min.js\"></script>\n"
         }
         scriptTags += """
@@ -112,7 +117,7 @@ public enum MarkdownHTMLService {
         <script src="mr:///js/markdown-reader.js" data-is-dark="\(isDark)" data-is-quicklook="\(isQuickLook)"></script>
         """
 
-        let katexCSS = hasKaTeX ? "<link rel=\"stylesheet\" href=\"mr:///css/katex.min.css\">\n" : ""
+        let katexCSS = needsKaTeX ? "<link rel=\"stylesheet\" href=\"mr:///css/katex.min.css\">\n" : ""
 
         return """
         <!DOCTYPE html>
@@ -139,7 +144,7 @@ public enum MarkdownHTMLService {
         """
     }
 
-    private static func preprocess(_ content: String) -> String {
+    private static func preprocess(_ content: String, mathEnabled: Bool = true) -> String {
         var result = content
         result = stripYAMLFrontMatter(result)
 
@@ -154,8 +159,10 @@ public enum MarkdownHTMLService {
         // 扩展语法预处理（顺序重要：先处理占多行的，再处理行内的）
         // 数学公式转换后立刻存入保护占位符：块内 LaTeX 常含 ^ / ~ / ==，
         // 否则会被后面的上标 / 下标 / 高亮预处理误改写（如 $$e^{-x^2}$$ 被插入 <sup>）。
-        result = preprocessBlockMath(result, store: &codeStore)
-        result = preprocessInlineMath(result, store: &codeStore)
+        if mathEnabled {
+            result = preprocessBlockMath(result, store: &codeStore)
+            result = preprocessInlineMath(result, store: &codeStore)
+        }
         result = preprocessFootnotes(result)
         result = preprocessHighlight(result)
         result = preprocessSuperscript(result)
@@ -204,9 +211,11 @@ public enum MarkdownHTMLService {
     }
 
     /// 将占位符还原为原始代码文本
+    /// 逆序还原：数学公式占位符（索引靠后）内容里可能嵌套更早的代码占位符
+    /// （如 $$...$$ 之间夹了行内代码），先还原外层才能让内层占位符暴露出来被替换。
     private static func restoreCodeRegions(_ content: String, store: [String]) -> String {
         var result = content
-        for (index, original) in store.enumerated() {
+        for (index, original) in store.enumerated().reversed() {
             // 匹配 CODEBLOCK_ 和 CODEINLINE_ 两种占位符
             for prefix in ["CODEBLOCK_", "CODEINLINE_"] {
                 let placeholder = "\u{0000}\(prefix)\(index)\u{0000}"
@@ -223,7 +232,9 @@ public enum MarkdownHTMLService {
     /// 上标 / 下标 / 高亮预处理误改写；在 preprocess 末尾随代码区域一并还原。
     private static func preprocessBlockMath(_ content: String, store: inout [String]) -> String {
         // 匹配 $$...\n...\n$$ 或同一行的 $$...$$
-        let pattern = #"\$\$([\s\S]+?)\$\$"#
+        // 排除 \u{0000}（代码占位符标记）：防止两个不相干的 $$ 隔着代码块远距离配对，
+        // 把中间的正文整段吞进公式。
+        let pattern = #"\$\$([^\x{0000}]+?)\$\$"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return content }
         let nsRange = NSRange(content.startIndex..., in: content)
         let matches = regex.matches(in: content, options: [], range: nsRange)
@@ -245,10 +256,14 @@ public enum MarkdownHTMLService {
     /// 转换为 <code class="language-math inline"> 格式，与现有 KaTeX 管道兼容。
     /// 同样存入保护占位符（CODEINLINE_），避免公式内 ^ / ~ / == 被后续行内预处理误改写。
     private static func preprocessInlineMath(_ content: String, store: inout [String]) -> String {
-        // 匹配 $...$ 但不匹配 $$（已由块级处理）和 \$（转义美元符号）
-        // 要求 $ 后不能为空格，$ 前不能为空格（避免匹配普通美元符号）
-        let pattern = #"(?<!\$)\$(?!\s)(.+?)(?<!\s)\$(?!\$)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return content }
+        // 匹配 $...$ 但不匹配 $$（已由块级处理）。约束（避免把美元价格误判为公式）：
+        // - 公式必须在同一行内闭合，且内容不含 $ / \u{0000}（代码占位符标记），
+        //   防止跨行、跨段落远距离配对把正文吞进公式（曾导致整页乱掉）；
+        // - 开头 $ 后不能是空格，结尾 $ 前不能是空格；
+        // - 结尾 $ 后不能紧跟数字（Pandoc 规则）：让 "$134/月，成本 $0.20/GB" 这类
+        //   价格对不构成公式。
+        let pattern = #"(?<!\$)\$(?![\s$])([^\n\x{0000}$]+?)(?<!\s)\$(?![\d$])"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return content }
         let nsRange = NSRange(content.startIndex..., in: content)
         let matches = regex.matches(in: content, options: [], range: nsRange)
 

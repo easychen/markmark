@@ -68,6 +68,7 @@ final class SettingsModel {
         static let aiPromptTemplate     = "com.markdownreader.aiPromptTemplate"
         static let rememberedSidebarVisible = "com.markdownreader.rememberedSidebarVisible"
         static let rememberedOutlineVisible = "com.markdownreader.rememberedOutlineVisible"
+        static let enableMathRendering  = "com.markdownreader.enableMathRendering"
     }
 
     private let defaults: UserDefaults
@@ -113,6 +114,11 @@ final class SettingsModel {
     /// 渲染视图最大宽度跟随窗口可用宽度（默认不选中，使用固定 980px）
     var maxContentWidthFollowsWindow: Bool {
         didSet { defaults.set(maxContentWidthFollowsWindow, forKey: Keys.maxContentWidthFollowsWindow) }
+    }
+
+    /// 渲染 LaTeX 数学公式（$...$ / $$...$$）。含大量美元金额的文档可关闭，避免价格被误判为公式
+    var enableMathRendering: Bool {
+        didSet { defaults.set(enableMathRendering, forKey: Keys.enableMathRendering) }
     }
 
     /// 启用命令行工具（安装 mdr 命令到 /usr/local/bin/）
@@ -427,6 +433,7 @@ final class SettingsModel {
         self.isDefaultMdOpener = Self.checkIsDefaultMdOpener()
         self.skipFileModifiedAlert = defaults.object(forKey: Keys.skipFileModifiedAlert) as? Bool ?? false
         self.maxContentWidthFollowsWindow = defaults.object(forKey: Keys.maxContentWidthFollowsWindow) as? Bool ?? false
+        self.enableMathRendering = defaults.object(forKey: Keys.enableMathRendering) as? Bool ?? true
         self.enableCommandLine = FileManager.default.fileExists(atPath: "/usr/local/bin/mdr")
         // Quick Look 预览默认启用，必须持久化到 UserDefaults
         // （Extension 通过 CFPreferences 读取，key 不存在时返回 false）

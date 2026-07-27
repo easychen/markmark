@@ -592,7 +592,8 @@ struct DetailView: View {
                     contentPadding: settings.contentPaddingPoints,
                     maxContentWidthFollowsWindow: settings.maxContentWidthFollowsWindow,
                     baseURL: baseURL,
-                    isDark: settings.resolvedThemeType == .dark
+                    isDark: settings.resolvedThemeType == .dark,
+                    mathEnabled: settings.enableMathRendering
                 )
                 data = try await PDFExportService.export(
                     html: html,
@@ -628,6 +629,7 @@ struct DetailView: View {
         let padding = settings.contentPaddingPoints
         let followsWindow = settings.maxContentWidthFollowsWindow
         let isDark = settings.resolvedThemeType == .dark
+        let mathEnabled = settings.enableMathRendering
 
         Task {
             let html = HTMLExportService.buildSelfContainedHTML(
@@ -637,7 +639,8 @@ struct DetailView: View {
                 contentPadding: padding,
                 maxContentWidthFollowsWindow: followsWindow,
                 baseURL: baseURL,
-                isDark: isDark
+                isDark: isDark,
+                mathEnabled: mathEnabled
             )
             do {
                 try html.data(using: .utf8)?.write(to: saveURL)
@@ -834,6 +837,7 @@ struct DetailView: View {
                     fileURL: documentViewModel.currentFileURL,
                     contentPadding: settings.contentPaddingPoints,
                     maxContentWidthFollowsWindow: settings.maxContentWidthFollowsWindow,
+                    mathEnabled: settings.enableMathRendering,
                     scrollToLine: documentViewModel.scrollToLineRequest,
                     themeCSS: themeColors.cssCustomProperties + themeColors.codeHighlightCSS,
                     isDark: settings.resolvedThemeType == .dark,

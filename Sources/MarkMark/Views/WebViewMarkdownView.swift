@@ -55,6 +55,7 @@ struct WebViewMarkdownView: NSViewRepresentable {
     let fileURL: URL?
     var contentPadding: CGFloat = 20
     var maxContentWidthFollowsWindow: Bool = false
+    var mathEnabled: Bool = true
     var scrollToLine: Int?
     let themeCSS: String
     var isDark: Bool = true
@@ -133,6 +134,7 @@ struct WebViewMarkdownView: NSViewRepresentable {
         private var lastThemeCSS = ""
         private var lastPadding: CGFloat = -1
         private var lastMaxWidth = false
+        private var lastMathEnabled = true
         private var lastScrollToLine: Int?
         private var pendingScrollToLine: Int?
         private var lastSearchSignature = ""
@@ -153,7 +155,8 @@ struct WebViewMarkdownView: NSViewRepresentable {
                 contentPadding: parent.contentPadding,
                 maxContentWidthFollowsWindow: parent.maxContentWidthFollowsWindow,
                 baseURL: baseURL,
-                isDark: parent.isDark
+                isDark: parent.isDark,
+                mathEnabled: parent.mathEnabled
             )
             isLoaded = false
             pendingScrollToLine = parent.scrollToLine
@@ -165,6 +168,7 @@ struct WebViewMarkdownView: NSViewRepresentable {
             lastThemeCSS = parent.themeCSS
             lastPadding = parent.contentPadding
             lastMaxWidth = parent.maxContentWidthFollowsWindow
+            lastMathEnabled = parent.mathEnabled
             lastScrollToLine = parent.scrollToLine
             lastSearchSignature = searchSignature()
         }
@@ -175,6 +179,12 @@ struct WebViewMarkdownView: NSViewRepresentable {
 
             // 文件切换：整页重载
             if parent.fileURL != lastLoadedURL {
+                loadFullHTML()
+                return
+            }
+
+            // 数学公式开关变化：KaTeX 脚本需随页面加载/卸载，整页重载
+            if parent.mathEnabled != lastMathEnabled {
                 loadFullHTML()
                 return
             }
@@ -231,7 +241,7 @@ struct WebViewMarkdownView: NSViewRepresentable {
 
         private func replaceContent(_ content: String) {
             let baseURL = parent.fileURL?.deletingLastPathComponent()
-            let renderResult = MarkdownHTMLService.render(content, baseURL: baseURL)
+            let renderResult = MarkdownHTMLService.render(content, baseURL: baseURL, mathEnabled: parent.mathEnabled)
             let escaped = Self.escapeForJSString(renderResult.html)
             eval("MR.replaceContent('\(escaped)')")
         }

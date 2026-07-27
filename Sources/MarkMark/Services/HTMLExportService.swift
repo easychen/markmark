@@ -27,14 +27,15 @@ enum HTMLExportService {
         contentPadding: CGFloat,
         maxContentWidthFollowsWindow: Bool,
         baseURL: URL?,
-        isDark: Bool
+        isDark: Bool,
+        mathEnabled: Bool = true
     ) -> String {
         // 1. 正文：图片以 base64 内联，使导出文件不依赖原始图片路径
-        let bodyHTML = MarkdownHTMLService.renderWithInlineImages(content, baseURL: baseURL).html
+        let bodyHTML = MarkdownHTMLService.renderWithInlineImages(content, baseURL: baseURL, mathEnabled: mathEnabled).html
 
         // 2. 特性探测：按需内联体积较大的库
         let hasMermaid = detectMermaid(content)
-        let hasMath = detectMath(content)
+        let hasMath = mathEnabled && detectMath(content)
 
         // 3. 样式（顺序与阅读视图一致：基础样式 → KaTeX → 主题 → 内容变量）
         var styleBlock = ""
@@ -185,8 +186,8 @@ enum HTMLExportService {
             return true
         }
         if content.contains("$$") { return true }
-        // 行内 $...$（要求成对、内部非空白），与渲染管线的判定保持一致
-        if let regex = try? NSRegularExpression(pattern: #"(?<!\$)\$(?!\s)(.+?)(?<!\s)\$(?!\$)"#, options: [.dotMatchesLineSeparators]) {
+        // 行内 $...$（要求成对、同一行、结尾不跟数字），与渲染管线的判定保持一致
+        if let regex = try? NSRegularExpression(pattern: #"(?<!\$)\$(?![\s$])([^\n\x{0000}$]+?)(?<!\s)\$(?![\d$])"#, options: []) {
             let range = NSRange(content.startIndex..., in: content)
             if regex.firstMatch(in: content, range: range) != nil { return true }
         }
