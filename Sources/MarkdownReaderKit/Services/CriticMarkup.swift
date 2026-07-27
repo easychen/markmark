@@ -54,12 +54,13 @@ public enum CriticMarkup {
         return ranges
     }
 
-    /// 容错查找：把选区中的非空白字符依次匹配，字符之间允许夹杂 ≤8 个 Markdown 噪声/空白字符。
+    /// 容错查找：把选区中的非空白字符依次匹配，字符之间允许夹杂 ≤8 个 Markdown 噪声/空白字符
+    /// （含 CriticMarkup 定界符 `={}<>+-^`，使跨已有标注边界的选区也能定位）。
     private static func tolerantRanges(of selectedText: String, in source: String) -> [Range<String.Index>] {
         let tokens = selectedText.filter { !$0.isWhitespace }
         // 太短不做容错（避免在长文里乱命中）；太长跳过（避免正则开销过大）
         guard tokens.count >= 2, tokens.count <= 200 else { return [] }
-        let separator = "[\\s*_~`\\\\]{0,8}"
+        let separator = "[\\s*_~`\\\\={}<>+^-]{0,8}"
         let pattern = tokens.map { NSRegularExpression.escapedPattern(for: String($0)) }
             .joined(separator: separator)
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
@@ -86,17 +87,221 @@ public enum CriticMarkup {
         return best
     }
 
+    // MARK: - 选区边界修正（格式安全）
+
+    /// 行内格式 span 模式（优先级从高到低，先命中者占位）。
+    /// `allowsNewline`：span 内容允许含换行（仅已有 CriticMarkup 标注——它们是不可分割的整体）。
+    private static let inlineSpanPatterns: [(pattern: String, allowsNewline: Bool)] = [
+        (#"\{~~[\s\S]*?~>[\s\S]*?~~\}"#, true),                    // 已有标注：替换
+        (#"\{\+\+[\s\S]*?\+\+\}"#, true),                          // 已有标注：新增
+        (#"\{--[\s\S]*?--\}"#, true),                              // 已有标注：删除
+        (#"\{==[\s\S]*?==\}(?:\{>>[\s\S]*?<<\})?"#, true),         // 已有标注：高亮（含紧邻评论）
+        (#"\{>>[\s\S]*?<<\}"#, true),                              // 已有标注：评论
+        ("(?<!`)(`+)(?!`)(.+?)(?<!`)\\1(?!`)", false),             // 行内代码
+        (#"\*\*(?!\s).+?(?<!\s)\*\*"#, false),                     // 粗体 **
+        (#"__(?!\s).+?(?<!\s)__"#, false),                         // 粗体 __
+        (#"~~(?!\s).+?(?<!\s)~~"#, false),                         // 删除线
+        (#"==(?!\s).+?(?<!\s)=="#, false),                         // 高亮 ==
+        (#"!?\[[^\[\]\n]*\]\([^()\n]*\)"#, false),                 // 链接 / 图片
+        (#"(?<![\w*])\*(?![\s*])[^*\n]+?(?<![\s\\])\*(?!\*)"#, false),  // 斜体 *
+        (#"(?<![\w_])_(?![\s_])[^_\n]+?(?<!\s)_(?![\w_])"#, false),     // 斜体 _
+        (#"(?<!\^)\^(?![\s^])[^\^\n]+?\^"#, false),                // 上标
+        (#"(?<!~)~(?![\s~])[^~\n]+?~(?!~)"#, false),               // 下标
+    ]
+
+    /// 把定位到的选区修正为「行内格式安全」的范围：与选区边界部分重叠的行内格式 span
+    /// （行内代码、粗/斜体、删除线、高亮、链接、上下标、已有标注）整体并入选区。
+    /// 否则 `{==` 等标记会插进 `**…**` 之类配对符号中间，撕裂行内格式导致整页渲染错乱
+    /// （容错定位的边界就可能落在标记符内部）。含 `|` 的 span 一律不并入——表格单元格
+    /// 边界不可跨越。
+    static func formatSafeRange(_ range: Range<String.Index>, in source: String) -> Range<String.Index> {
+        guard !range.isEmpty else { return range }
+
+        // 扫描区域：选区首行行首 → 末行行尾
+        var scanStart = source.startIndex
+        if let nl = source[..<range.lowerBound].lastIndex(of: "\n") {
+            scanStart = source.index(after: nl)
+        }
+        var scanEnd = source.endIndex
+        if let nl = source[range.upperBound...].firstIndex(of: "\n") {
+            scanEnd = nl
+        }
+
+        // 收集 span：按优先级，跳过与已收集重叠者。
+        // `swallowsContained`：行内代码即使完全包住选区也要整体并入——标记落在反引号
+        // 内部会被代码保护原样展示（`{==` 变成字面文本），标注完全失效。
+        // 其他 span（粗斜体 / 已有标注等）完全包住选区时无需处理，内部插标记是安全的。
+        var spans: [(range: Range<String.Index>, swallowsContained: Bool)] = []
+        let nsRegion = NSRange(scanStart..<scanEnd, in: source)
+        for entry in inlineSpanPatterns {
+            guard let regex = try? NSRegularExpression(pattern: entry.pattern) else { continue }
+            let isInlineCode = entry.pattern.hasPrefix("(?<!`)")
+            for m in regex.matches(in: source, options: [.withTransparentBounds], range: nsRegion) {
+                guard let r = Range(m.range, in: source) else { continue }
+                let text = source[r]
+                if text.contains("|") { continue }
+                if !entry.allowsNewline && text.contains("\n") { continue }
+                if spans.contains(where: { $0.range.overlaps(r) }) { continue }
+                spans.append((r, isInlineCode))
+            }
+        }
+
+        // 迭代扩张，直到没有 span 被选区边界撕裂
+        var result = range
+        var changed = true
+        while changed {
+            changed = false
+            for span in spans {
+                let r = span.range
+                guard r.overlaps(result), r != result else { continue }
+                let spanInsideSelection = r.lowerBound >= result.lowerBound && r.upperBound <= result.upperBound
+                let selectionInsideSpan = result.lowerBound >= r.lowerBound && result.upperBound <= r.upperBound
+                let torn = !spanInsideSelection && !selectionInsideSpan
+                if torn || (selectionInsideSpan && span.swallowsContained) {
+                    result = min(r.lowerBound, result.lowerBound)..<max(r.upperBound, result.upperBound)
+                    changed = true
+                }
+            }
+        }
+        return result
+    }
+
     // MARK: - 应用标注
+
+    /// 实际写入的一条标注（字段与 `parseAnnotations` 的解析结果对齐，供会话记录配对）。
+    public struct AppliedAnnotation: Equatable, Sendable {
+        public let kind: Annotation.Kind
+        public let text: String
+        public let payload: String?
+
+        public init(kind: Annotation.Kind, text: String, payload: String?) {
+            self.kind = kind
+            self.text = text
+            self.payload = payload
+        }
+    }
+
+    /// `applyDetailed` 的结果：更新后的源码 + 实际写入的标注列表（按文档中出现顺序）。
+    /// 边界修正 / 跨块分段后，实际包裹的文本可能与原选区不同，调用方应以此为准记录会话标注。
+    public struct ApplyResult {
+        public let source: String
+        public let annotations: [AppliedAnnotation]
+    }
 
     /// 在源码中定位选区并写入对应 CriticMarkup。找不到选区时返回 nil。
     public static func apply(_ op: Operation, to source: String, selectedText: String, nearLine: Int) -> String? {
-        guard let range = locateRange(in: source, selectedText: selectedText, nearLine: nearLine) else {
-            return nil
+        applyDetailed(op, to: source, selectedText: selectedText, nearLine: nearLine)?.source
+    }
+
+    /// 同 `apply`，并返回实际写入的标注明细。
+    ///
+    /// 两条路径：
+    /// 1. **整段定位**（绝大多数选区）：定位后经 `formatSafeRange` 修正边界再包裹；
+    ///    若命中范围跨越空行（跨段落），改走分段路径避免标记跨块撕裂渲染。
+    /// 2. **分段定位**（跨表格单元格 / 跨段落、列表项）：渲染视图的 `selection.toString()`
+    ///    在块边界产生 `\t` / `\n`，按其拆成片段逐一定位、分别包裹；
+    ///    评论 / 替换 / 插入的语义落在最后一个片段上，任一片段定位失败则整体失败。
+    public static func applyDetailed(_ op: Operation, to source: String, selectedText: String, nearLine: Int) -> ApplyResult? {
+        if let raw = locateRange(in: source, selectedText: selectedText, nearLine: nearLine) {
+            let range = formatSafeRange(raw, in: source)
+            if !containsBlankLine(source[range]) {
+                return wrapSingle(op, source: source, range: range)
+            }
+            // 整段命中但跨段落：优先分段；分段失败退回整段（浏览器对跨段标记多数能恢复）
+            return applyFragments(op, to: source, selectedText: selectedText, nearLine: nearLine)
+                ?? wrapSingle(op, source: source, range: range)
         }
+        return applyFragments(op, to: source, selectedText: selectedText, nearLine: nearLine)
+    }
+
+    private static func containsBlankLine(_ text: Substring) -> Bool {
+        text.range(of: #"\n[ \t]*\n"#, options: .regularExpression) != nil
+    }
+
+    /// 单一范围包裹（整段路径）。
+    private static func wrapSingle(_ op: Operation, source: String, range: Range<String.Index>) -> ApplyResult {
         let selected = String(source[range])
         var result = source
         result.replaceSubrange(range, with: replacement(for: op, selected: selected))
-        return result
+        let annotations: [AppliedAnnotation]
+        switch op {
+        case .delete:           annotations = [AppliedAnnotation(kind: .deletion, text: selected, payload: nil)]
+        case .highlight:        annotations = [AppliedAnnotation(kind: .highlight, text: selected, payload: nil)]
+        case .comment(let c):   annotations = [AppliedAnnotation(kind: .comment, text: selected, payload: collapseBlankLines(c))]
+        case .replace(let new): annotations = [AppliedAnnotation(kind: .substitution, text: selected, payload: new)]
+        case .insert(let new):  annotations = [AppliedAnnotation(kind: .addition, text: new, payload: nil)]
+        }
+        return ApplyResult(source: result, annotations: annotations)
+    }
+
+    /// 分段路径：按 `\t` / 换行把选区拆成片段，顺序定位（每段从上一段之后搜起）并分别包裹。
+    private static func applyFragments(_ op: Operation, to source: String, selectedText: String, nearLine: Int) -> ApplyResult? {
+        let fragments = selectedText
+            .split(whereSeparator: { $0 == "\t" || $0 == "\n" || $0 == "\r" })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !fragments.isEmpty else { return nil }
+
+        // 顺序定位：首段按 nearLine 选最近，后续各段必须出现在前一段之后
+        var ranges: [Range<String.Index>] = []
+        var searchFrom = source.startIndex
+        for (i, fragment) in fragments.enumerated() {
+            let located: Range<String.Index>? = (i == 0)
+                ? locateRange(in: source, selectedText: fragment, nearLine: nearLine)
+                : firstRange(of: fragment, in: source, from: searchFrom)
+            guard let raw = located, raw.lowerBound >= searchFrom else { return nil }
+            let r = formatSafeRange(raw, in: source)
+            guard r.lowerBound >= searchFrom else { return nil }   // 修正后侵入上一段 → 放弃
+            ranges.append(r)
+            searchFrom = r.upperBound
+        }
+
+        // 从 source 原样拼接（避免边替换边失效的索引问题）
+        var pieces: [String] = []
+        var annotations: [AppliedAnnotation] = []
+        var cursor = source.startIndex
+        for (i, r) in ranges.enumerated() {
+            pieces.append(String(source[cursor..<r.lowerBound]))
+            let (wrapped, anns) = fragmentReplacement(op, fragment: String(source[r]), isLast: i == ranges.count - 1)
+            pieces.append(wrapped)
+            annotations.append(contentsOf: anns)
+            cursor = r.upperBound
+        }
+        pieces.append(String(source[cursor...]))
+        return ApplyResult(source: pieces.joined(), annotations: annotations)
+    }
+
+    /// 片段包裹规则：评论 / 替换 / 插入的核心语义落在最后一个片段；
+    /// 其余片段按操作退化为高亮（评论）或删除（替换）。
+    private static func fragmentReplacement(_ op: Operation, fragment: String, isLast: Bool) -> (String, [AppliedAnnotation]) {
+        switch op {
+        case .delete:
+            return ("{--\(fragment)--}", [AppliedAnnotation(kind: .deletion, text: fragment, payload: nil)])
+        case .highlight:
+            return ("{==\(fragment)==}", [AppliedAnnotation(kind: .highlight, text: fragment, payload: nil)])
+        case .comment(let c):
+            guard isLast else {
+                return ("{==\(fragment)==}", [AppliedAnnotation(kind: .highlight, text: fragment, payload: nil)])
+            }
+            let collapsed = collapseBlankLines(c)
+            return ("{==\(fragment)==}{>>\(collapsed)<<}",
+                    [AppliedAnnotation(kind: .comment, text: fragment, payload: collapsed)])
+        case .replace(let new):
+            guard isLast else {
+                return ("{--\(fragment)--}", [AppliedAnnotation(kind: .deletion, text: fragment, payload: nil)])
+            }
+            return ("{~~\(fragment)~>\(new)~~}",
+                    [AppliedAnnotation(kind: .substitution, text: fragment, payload: new)])
+        case .insert(let new):
+            guard isLast else { return (fragment, []) }
+            return ("\(fragment){++\(new)++}", [AppliedAnnotation(kind: .addition, text: new, payload: nil)])
+        }
+    }
+
+    /// `start` 之后（含）第一处出现：先精确、后容错。
+    private static func firstRange(of needle: String, in source: String, from start: String.Index) -> Range<String.Index>? {
+        if let r = source.range(of: needle, range: start..<source.endIndex) { return r }
+        return tolerantRanges(of: needle, in: source).first(where: { $0.lowerBound >= start })
     }
 
     private static func replacement(for op: Operation, selected: String) -> String {

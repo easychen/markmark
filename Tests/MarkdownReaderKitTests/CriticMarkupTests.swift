@@ -364,9 +364,10 @@ struct CriticMarkupTolerantLocateTests {
 
     @Test("locates a selection that crosses an inline-emphasis boundary")
     func crossesEmphasis() {
-        // 渲染视图里看到 "bc"，但源码是 a**b**c —— "bc" 不是子串，需容错
+        // 渲染视图里看到 "bc"，但源码是 a**b**c —— "bc" 不是子串，需容错。
+        // 容错命中 "b**c" 后边界修正把被撕裂的 **b** 整体并入，避免 {-- 插进 ** 配对中间
         let out = CriticMarkup.apply(.delete, to: "a**b**c", selectedText: "bc", nearLine: 1)
-        #expect(out == "a**{--b**c--}")
+        #expect(out == "a{--**b**c--}")
     }
 
     @Test("locates across a soft line break (newline in source)")

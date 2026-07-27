@@ -324,24 +324,23 @@ final class DocumentViewModel {
         }
 
         let op: CriticMarkup.Operation
-        let recordKind: CriticMarkup.Annotation.Kind
         switch action.op {
-        case "delete":    op = .delete;                          recordKind = .deletion
-        case "highlight": op = .highlight;                       recordKind = .highlight
-        case "comment":   op = .comment(action.payload ?? "");   recordKind = .comment
-        case "replace":   op = .replace(action.payload ?? "");   recordKind = .substitution
-        case "insert":    op = .insert(action.payload ?? "");    recordKind = .addition
+        case "delete":    op = .delete
+        case "highlight": op = .highlight
+        case "comment":   op = .comment(action.payload ?? "")
+        case "replace":   op = .replace(action.payload ?? "")
+        case "insert":    op = .insert(action.payload ?? "")
         default: return false
         }
-        if let updated = CriticMarkup.apply(
+        if let result = CriticMarkup.applyDetailed(
             op,
             to: content,
             selectedText: action.text,
             nearLine: action.line
         ) {
             registerCriticUndo()
-            content = updated
-            appendSessionRecord(kind: recordKind, action: action)
+            content = result.source
+            appendSessionRecords(result.annotations)
             return true
         }
         return false
@@ -401,19 +400,13 @@ final class DocumentViewModel {
 
     /// 记录本次会话新增的标注。字段需与 `CriticMarkup.parseAnnotations` 的解析结果对齐，
     /// 面板按 (kind, text, payload) 把记录匹配回当前文档。
-    private func appendSessionRecord(kind: CriticMarkup.Annotation.Kind, action: CriticActionPayload) {
+    private func appendSessionRecords(_ annotations: [CriticMarkup.AppliedAnnotation]) {
         guard let url = currentFileURL else { return }
-        let record: SessionAnnotationRecord
-        switch kind {
-        case .addition:
-            // {++新增++} 的解析 text 是新增内容（即 payload）
-            record = SessionAnnotationRecord(kind: kind, text: action.payload ?? "", payload: nil, addedAt: Date())
-        case .deletion, .highlight:
-            record = SessionAnnotationRecord(kind: kind, text: action.text, payload: nil, addedAt: Date())
-        case .comment, .substitution:
-            record = SessionAnnotationRecord(kind: kind, text: action.text, payload: action.payload ?? "", addedAt: Date())
+        let now = Date()
+        let records = annotations.map {
+            SessionAnnotationRecord(kind: $0.kind, text: $0.text, payload: $0.payload, addedAt: now)
         }
-        sessionAnnotations[url, default: []].append(record)
+        sessionAnnotations[url, default: []].append(contentsOf: records)
     }
 
     /// 评论被编辑后同步会话记录（按旧评论内容匹配）
